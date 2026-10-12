@@ -1,0 +1,55 @@
+{
+  "name": "@gang-of-beads/pi-web-subagents",
+  "version": "0.1.0",
+  "description": "PI WEB plugin for pi-subagents: a Subagents tab listing the session's runs with their output, a reply card for a child's supervisor request, and short rows for subagent notices.",
+  "license": "MIT",
+  "type": "module",
+  "keywords": [
+    "pi-package",
+    "pi-web",
+    "pi-web-plugin",
+    "pi-subagents"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Gang-of-Beads/pi-web-subagents.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Gang-of-Beads/pi-web-subagents/issues"
+  },
+  "homepage": "https://github.com/Gang-of-Beads/pi-web-subagents#readme",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "piWeb": {
+    "plugins": [
+      {
+        "id": "subagents",
+        "browserRoot": "dist/browser",
+        "module": "dist/browser/pi-web-plugin.js",
+        "serverModule": "dist/server-plugin.js"
+      }
+    ]
+  },
+  "scripts": {
+    "build": "node build.mjs",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "check": "npm run typecheck && npm test && npm run build && git diff --exit-code -- dist"
+  },
+  "devDependencies": {
+    "@gang-of-beads/pi-web": "^2.202610.4",
+    "@types/node": "^24.13.3",
+    "esbuild": "^0.28.2",
+    "happy-dom": "^20.11.1",
+    "lit": "^3.3.3",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  }
+}
