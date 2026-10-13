@@ -1,5 +1,4 @@
 // @vitest-environment happy-dom
-/* eslint-disable @typescript-eslint/consistent-type-assertions, @typescript-eslint/no-unnecessary-condition, @typescript-eslint/no-unused-vars -- review repro fixture: stubs reach into private runtime shapes; rewritten as a permanent test when its phase removes it.fails */
 import { html as litHtml, render as litRender, svg as litSvg, type TemplateResult } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginActivationContext, PluginListModel, WorkspacePanelContext } from "@gang-of-beads/pi-web/plugin-api";
@@ -11,8 +10,6 @@ import plugin from "./pi-web-plugin.js";
  * things have to hold: an answer belongs to the read that asked (a late answer
  * may not overwrite a newer one), one read at a time (a stalled read may not be
  * multiplied by the poll), and the reading state may not outlive its read.
- *
- * The three assertions below are the ones that fail on the pre-fix code.
  */
 
 const SESSION = "/sessions/session-a.jsonl";
@@ -127,8 +124,7 @@ describe("the subagents panel read", () => {
 
   /**
    * A poll tick must not add a second read of the same thing while the first
-   * is still unanswered; the shell already owns a one-read-at-a-time helper
-   * for exactly this (src/client/src/sessionActivityPolling.ts).
+   * is still unanswered.
    */
   it("keeps one read in flight for the same session", async () => {
     const harnessed = harness();
@@ -255,7 +251,7 @@ const answerAll = async (panel: Watched, agent: string): Promise<void> => {
   await settle();
 };
 
-describe("when the subagents panel reads while nobody watches it (review p3b)", () => {
+describe("when the subagents panel reads while nobody watches it", () => {
   it("stops polling once the panel and its badge are off screen, and reads once when they are back", async () => {
     const panel = watched({ isStreaming: true });
     await answerAll(panel, "run");
