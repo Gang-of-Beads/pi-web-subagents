@@ -1,4 +1,4 @@
-import type { HtmlTemplateTag, PiWebPlugin, PluginActivationContext, WorkspacePanelContext } from "@gang-of-beads/pi-web/plugin-api";
+import type { HtmlTemplateTag, PiWebPlugin, PluginActivationContext, WorkspacePanelContext } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
 import { subagentListModel, type SubagentListState } from "./runRows.js";
 import { RunsRead, type RunsView } from "./runsRead.js";
 import { followedAfter, runsActivityOf, runsPollingDecision, UNSEEN_ANSWERS_BEFORE_STOP, type FollowedActivity, type RunsActivity } from "./runsPolling.js";

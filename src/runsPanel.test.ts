@@ -1,7 +1,7 @@
 // @vitest-environment happy-dom
 import { html as litHtml, render as litRender, svg as litSvg, type TemplateResult } from "lit";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { PluginActivationContext, PluginListModel, WorkspacePanelContext } from "@gang-of-beads/pi-web/plugin-api";
+import type { PluginActivationContext, PluginListModel, WorkspacePanelContext } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
 import { ON_SCREEN_MARKER_TAG, type OnScreenMarker } from "./onScreenMarker.js";
 import plugin from "./pi-web-plugin.js";
 

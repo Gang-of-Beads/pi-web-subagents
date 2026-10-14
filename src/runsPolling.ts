@@ -1,4 +1,4 @@
-import type { PluginSessionStatus } from "@gang-of-beads/pi-web/plugin-api";
+import type { PluginSessionStatus } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
 
 /**
  * When the subagents panel reads its run list again (object model §4.3, idle

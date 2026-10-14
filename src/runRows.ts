@@ -1,4 +1,4 @@
-import type { PluginListModel, PluginListRow } from "@gang-of-beads/pi-web/plugin-api";
+import type { PluginListModel, PluginListRow } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
 
 /**
  * What one subagent run says on a row.

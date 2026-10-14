@@ -1,5 +1,5 @@
 import { basename, dirname } from "node:path";
-import type { JsonValue, PiWebServerPlugin } from "@gang-of-beads/pi-web/server-plugin-api";
+import type { JsonValue, PiWebServerPlugin } from "@gang-of-beads/pi-web-plugin-api/server-plugin-api";
 import { listSubagentRuns, readSubagentRunOutput, type SubagentRunInfo } from "./server/runs.js";
 
 /**
