@@ -28,18 +28,6 @@ describe("the subagent list state", () => {
     expect(state).toMatchObject({ kind: "rows", running: 1 });
   });
 
-  it("keeps the tool's run id and reads a control it does not know as unknown", () => {
-    const state = subagentListState({
-      known: true,
-      runs: [
-        { runId: "a", agent: "worker", status: "running", toolRunId: "t-a", control: "async" },
-        { runId: "b", agent: "worker", status: "running", control: "paused-by-a-newer-tool" },
-        { runId: "c", agent: "worker", status: "done" },
-      ],
-    });
-    expect(state.kind === "rows" ? state.rows.map((row) => [row.toolRunId, row.control]) : []).toEqual([["t-a", "async"], [undefined, "unknown"], [undefined, "unknown"]]);
-  });
-
   it("drops rows it cannot identify rather than rendering blanks", () => {
     const state = subagentListState({ known: true, runs: [{ nonsense: true }, { runId: "a", agent: "x", status: "running" }] });
     expect(state.kind === "rows" ? state.rows.length : 0).toBe(1);

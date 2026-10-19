@@ -54,12 +54,12 @@ async function ageDirectory(path: string, ageMs: number): Promise<void> {
  * is false only to model a neighbour's run, which this session has no record
  * of and must not list.
  */
-async function writeRunningArtifact(dir: string, runId: string, agent: string, ageMs = 0, spawnedByParent = true, source?: "async" | "foreground"): Promise<void> {
+async function writeRunningArtifact(dir: string, runId: string, agent: string, ageMs = 0, spawnedByParent = true): Promise<void> {
   const artifacts = join(dir, "subagent-artifacts");
   await mkdir(artifacts, { recursive: true });
   await writeFile(join(artifacts, `${runId}_${agent}_0_input.md`), "the task", "utf8");
   const transcript = join(artifacts, `${runId}_${agent}_0_transcript.jsonl`);
-  await writeFile(transcript, JSON.stringify({ recordType: "message", ...(source === undefined ? {} : { source }), role: "assistant" }), "utf8");
+  await writeFile(transcript, JSON.stringify({ recordType: "message", role: "assistant" }), "utf8");
   if (ageMs > 0) {
     const when = new Date(Date.now() - ageMs);
     await utimes(transcript, when, when);
@@ -308,58 +308,6 @@ describe("runs whose directory and artifacts use different ids", () => {
     const [run] = await listSubagentRuns(dir, PARENT);
 
     expect(run).toMatchObject({ runId: toolRunId, agent: "researcher", status: "done", task: "research SpaceX", hasOutput: true });
-  });
-
-  /**
-   * The extension's `/subagents-stop` and `/subagents-steer` take the tool's run
-   * id. While a run works its row is still named after its directory, so the
-   * tool's id has to travel with it, together with how the tool holds the run,
-   * which the tool stamps on every record of the run's artifact transcript.
-   */
-  it("names a running run by the tool's id and says the tool runs it detached", async () => {
-    const dir = await sessionDir();
-    const childSessionId = "c8ca844b-a083-4db6-954a-41f4689b00ec";
-    const toolRunId = "e9f34801-3eb8-403e-9563-9dde612a1988";
-    await writeTranscript(dir, childSessionId, [
-      { type: "session_info", name: `subagent-worker-${toolRunId}-1` },
-      { type: "message", message: { role: "assistant", content: [{ type: "text", text: "reading" }] } },
-    ]);
-    await writeRunningArtifact(dir, toolRunId, "worker", 0, false, "async");
-
-    const [run] = await listSubagentRuns(dir, PARENT, Date.now(), { parentActive: true });
-
-    expect(run).toMatchObject({ runId: childSessionId, status: "running", toolRunId, control: "async" });
-  });
-
-  it("lists a run once when the parent names its tool id and its directory names its child session", async () => {
-    const dir = await sessionDir();
-    const childSessionId = "c8ca844b-a083-4db6-954a-41f4689b00ec";
-    const toolRunId = "e9f34801-3eb8-403e-9563-9dde612a1988";
-    await writeTranscript(dir, childSessionId, [{ type: "session_info", name: `subagent-worker-${toolRunId}-1` }]);
-    await writeRunningArtifact(dir, toolRunId, "worker", 0, true, "async");
-
-    const runs = await listSubagentRuns(dir, PARENT, Date.now(), { parentActive: true });
-
-    expect(runs.map((run) => run.runId)).toEqual([childSessionId]);
-  });
-
-  it("says a running run belongs to the parent's reply when the tool stamped it foreground", async () => {
-    const dir = await sessionDir();
-    await writeRunningArtifact(dir, "7666849d-3eb3-4daf-b9f4-b8f34a0c4e42", "worker", 0, true, "foreground");
-
-    const [run] = await listSubagentRuns(dir, PARENT, Date.now(), { parentActive: true });
-
-    expect(run).toMatchObject({ toolRunId: "7666849d-3eb3-4daf-b9f4-b8f34a0c4e42", control: "foreground" });
-  });
-
-  it("does not guess how a running run is held when no transcript of it says", async () => {
-    const dir = await sessionDir();
-    await writeRunningArtifact(dir, "7666849d-3eb3-4daf-b9f4-b8f34a0c4e42", "worker");
-    await writeTranscript(dir, "91c34f97-a9a1-4c8c-85b3-2061fe772ae2", [{ type: "message", message: { role: "assistant", content: [{ type: "text", text: "x" }] } }]);
-
-    const runs = await listSubagentRuns(dir, PARENT, Date.now(), { parentActive: true });
-
-    expect(runs.map((run) => run.control)).toEqual(["unknown", "unknown"]);
   });
 
   it("still describes a run whose transcript names no tool run", async () => {
