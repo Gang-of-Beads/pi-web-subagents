@@ -48,8 +48,11 @@ function runControlsUiOf(ui: PluginActivationContext["ui"]): RunControlsUi | und
 
 function renderRuns(html: HtmlTemplateTag, ui: PluginActivationContext["ui"], view: RunsView | undefined, expansionOf: RunExpansionOf | undefined) {
   if (ui?.renderList === undefined) return html`<p class="muted">This list needs a newer PI WEB on this device.</p>`;
-  return ui.renderList(subagentListModel(view?.state, view?.refreshFailed === true, expansionOf));
+  return ui.renderList(subagentListModel(view?.state, view?.refreshFailed === true, expansionOf, Date.now()));
 }
+
+/** How often a running row's elapsed time moves on screen; a redraw, never a read. */
+const ELAPSED_REDRAW_MS = 1000;
 
 const plugin: PiWebPlugin = {
   apiVersion: 2,
@@ -59,6 +62,7 @@ const plugin: PiWebPlugin = {
     const callOperation = context.callOperation;
     let requestUpdate: () => void = () => undefined;
     let polling: ReturnType<typeof setInterval> | undefined;
+    let elapsedRedraw: ReturnType<typeof setInterval> | undefined;
     let followed: { readonly sessionFile: string; readonly activity: RunsActivity } | undefined;
     let unseenAnswers = 0;
     let panelShown: boolean | undefined;
@@ -72,6 +76,15 @@ const plugin: PiWebPlugin = {
     const stopPolling = (): void => {
       clearInterval(polling);
       polling = undefined;
+    };
+    /** Redraws while the panel is on screen with a running row, so its elapsed time moves without a read. */
+    const keepElapsedMoving = (moving: boolean): void => {
+      if (moving && panelShown !== false) {
+        elapsedRedraw ??= setInterval(() => { requestUpdate(); }, ELAPSED_REDRAW_MS);
+        return;
+      }
+      clearInterval(elapsedRedraw);
+      elapsedRedraw = undefined;
     };
     /**
      * Each answer asks the host to draw, and that draw follows again while the panel or its
@@ -92,6 +105,7 @@ const plugin: PiWebPlugin = {
       if (panelShown === shown) return;
       panelShown = shown;
       if (shown) requestUpdate();
+      else keepElapsedMoving(false);
     };
     const shownFor = (panel: WorkspacePanelContext): SubagentListState | undefined => {
       const sessionFile = sessionFileOf(panel);
@@ -217,12 +231,17 @@ const plugin: PiWebPlugin = {
             render: (panel) => {
               const sessionFile = sessionFileOf(panel);
               const expansionOf = controlsUi === undefined || sessionFile === undefined ? undefined : expansionFor(panel, sessionFile, controlsUi);
-              return html`<pi-subagents-on-screen .onChange=${onScreen}></pi-subagents-on-screen>${renderRuns(html, context.ui, ensure(panel), expansionOf)}`;
+              const view = ensure(panel);
+              keepElapsedMoving(view?.state?.kind === "rows" && view.state.running > 0);
+              return html`<pi-subagents-on-screen .onChange=${onScreen}></pi-subagents-on-screen>${renderRuns(html, context.ui, view, expansionOf)}`;
             },
           },
         ],
       },
-      dispose: stopPolling,
+      dispose: () => {
+        stopPolling();
+        keepElapsedMoving(false);
+      },
     };
   },
 };

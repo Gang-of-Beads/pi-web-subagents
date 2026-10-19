@@ -22,8 +22,9 @@ function subagentListState(answer) {
   if (rows.length === 0) return { kind: "empty" };
   return { kind: "rows", rows, running: rows.filter((row) => row.status === "running").length };
 }
-function runPresentation(row) {
-  const elapsed = formatElapsed(row.elapsedMs);
+function runPresentation(row, now = Date.now()) {
+  const startedAtMs = Date.parse(row.startedAt);
+  const elapsed = formatElapsed(row.status === "running" && Number.isFinite(startedAtMs) ? Math.max(0, now - startedAtMs) : row.elapsedMs);
   const activity = row.lastActivity === void 0 || row.lastActivity === "" ? void 0 : row.lastActivity;
   if (row.status === "running") {
     return { label: "Working", tone: "running", detail: activity === void 0 ? `${elapsed} so far` : `${elapsed} \xB7 ${activity}` };
@@ -43,8 +44,8 @@ var ROW_SIDE = {
   problem: (presentation) => ({ status: { label: presentation.label, tone: "problem" } }),
   unknown: (presentation) => ({ status: { label: presentation.label, tone: "neutral" } })
 };
-function listRow(row, expansionOf) {
-  const presentation = runPresentation(row);
+function listRow(row, now, expansionOf) {
+  const presentation = runPresentation(row, now);
   return {
     id: row.runId,
     title: row.task === void 0 ? row.agent : `${row.agent}: ${row.task}`,
@@ -60,7 +61,7 @@ var LIST_WORDS = {
   failed: "This machine could not read the runs.",
   stale: "Could not refresh - showing the last read."
 };
-function subagentListModel(state, refreshFailed, expansionOf) {
+function subagentListModel(state, refreshFailed, expansionOf, now = Date.now()) {
   if (state === void 0) return { read: "reading", groups: [], words: LIST_WORDS };
   if (state.kind === "unknown") return { read: "failed", groups: [], words: { ...LIST_WORDS, failed: state.reason } };
   if (state.kind === "empty" && refreshFailed) return { read: "failed", groups: [], words: { ...LIST_WORDS, failed: STALE_EMPTY } };
@@ -69,8 +70,8 @@ function subagentListModel(state, refreshFailed, expansionOf) {
     read: refreshFailed ? "failed" : "ready",
     words: LIST_WORDS,
     groups: [
-      { id: "running", heading: "Running", rows: rows.filter((row) => row.status === "running").map((row) => listRow(row, expansionOf)) },
-      { id: "finished", heading: "Finished", rows: rows.filter((row) => row.status !== "running").map((row) => listRow(row)) }
+      { id: "running", heading: "Running", rows: rows.filter((row) => row.status === "running").map((row) => listRow(row, now, expansionOf)) },
+      { id: "finished", heading: "Finished", rows: rows.filter((row) => row.status !== "running").map((row) => listRow(row, now)) }
     ]
   };
 }
@@ -1170,8 +1171,9 @@ function runControlsUiOf(ui) {
 }
 function renderRuns(html, ui, view, expansionOf) {
   if (ui?.renderList === void 0) return html`<p class="muted">This list needs a newer PI WEB on this device.</p>`;
-  return ui.renderList(subagentListModel(view?.state, view?.refreshFailed === true, expansionOf));
+  return ui.renderList(subagentListModel(view?.state, view?.refreshFailed === true, expansionOf, Date.now()));
 }
+var ELAPSED_REDRAW_MS = 1e3;
 var plugin = {
   apiVersion: 2,
   name: "Subagents",
@@ -1180,6 +1182,7 @@ var plugin = {
     const callOperation = context.callOperation;
     let requestUpdate = () => void 0;
     let polling;
+    let elapsedRedraw;
     let followed;
     let unseenAnswers = 0;
     let panelShown;
@@ -1193,6 +1196,16 @@ var plugin = {
     const stopPolling = () => {
       clearInterval(polling);
       polling = void 0;
+    };
+    const keepElapsedMoving = (moving) => {
+      if (moving && panelShown !== false) {
+        elapsedRedraw ??= setInterval(() => {
+          requestUpdate();
+        }, ELAPSED_REDRAW_MS);
+        return;
+      }
+      clearInterval(elapsedRedraw);
+      elapsedRedraw = void 0;
     };
     const poll = () => {
       if (unseenAnswers >= UNSEEN_ANSWERS_BEFORE_STOP) {
@@ -1209,6 +1222,7 @@ var plugin = {
       if (panelShown === shown) return;
       panelShown = shown;
       if (shown) requestUpdate();
+      else keepElapsedMoving(false);
     };
     const shownFor = (panel) => {
       const sessionFile = sessionFileOf(panel);
@@ -1321,12 +1335,17 @@ ${row.runId}`;
             render: (panel) => {
               const sessionFile = sessionFileOf(panel);
               const expansionOf = controlsUi === void 0 || sessionFile === void 0 ? void 0 : expansionFor(panel, sessionFile, controlsUi);
-              return html`<pi-subagents-on-screen .onChange=${onScreen}></pi-subagents-on-screen>${renderRuns(html, context.ui, ensure(panel), expansionOf)}`;
+              const view = ensure(panel);
+              keepElapsedMoving(view?.state?.kind === "rows" && view.state.running > 0);
+              return html`<pi-subagents-on-screen .onChange=${onScreen}></pi-subagents-on-screen>${renderRuns(html, context.ui, view, expansionOf)}`;
             }
           }
         ]
       },
-      dispose: stopPolling
+      dispose: () => {
+        stopPolling();
+        keepElapsedMoving(false);
+      }
     };
   }
 };

@@ -55,8 +55,13 @@ export function subagentListState(answer: unknown): SubagentListState {
   return { kind: "rows", rows, running: rows.filter((row) => row.status === "running").length };
 }
 
-export function runPresentation(row: SubagentRunRow): RunPresentation {
-  const elapsed = formatElapsed(row.elapsedMs);
+/**
+ * A running run's elapsed time counts on from its start on this page's clock, so
+ * the row moves between reads; a finished run keeps the duration it reported.
+ */
+export function runPresentation(row: SubagentRunRow, now = Date.now()): RunPresentation {
+  const startedAtMs = Date.parse(row.startedAt);
+  const elapsed = formatElapsed(row.status === "running" && Number.isFinite(startedAtMs) ? Math.max(0, now - startedAtMs) : row.elapsedMs);
   const activity = row.lastActivity === undefined || row.lastActivity === "" ? undefined : row.lastActivity;
   if (row.status === "running") {
     return { label: "Working", tone: "running", detail: activity === undefined ? `${elapsed} so far` : `${elapsed} · ${activity}` };
@@ -83,8 +88,8 @@ const ROW_SIDE: Readonly<Record<RunPresentation["tone"], (presentation: RunPrese
 /** What opens a running row; absent on a host that cannot draw one, where rows stay flat. */
 export type RunExpansionOf = (row: SubagentRunRow) => PluginRowExpansion;
 
-function listRow(row: SubagentRunRow, expansionOf?: RunExpansionOf): PluginListRow {
-  const presentation = runPresentation(row);
+function listRow(row: SubagentRunRow, now: number, expansionOf?: RunExpansionOf): PluginListRow {
+  const presentation = runPresentation(row, now);
   return {
     id: row.runId,
     title: row.task === undefined ? row.agent : `${row.agent}: ${row.task}`,
@@ -109,9 +114,10 @@ const LIST_WORDS = {
  * group, settled ones in another. A machine that could not say anything gives
  * its reason as the empty page's words; one whose latest refresh failed keeps
  * the last read under the stale line. Running rows open when `expansionOf` is
- * given; finished rows stay flat.
+ * given; finished rows stay flat. `now` is this page's clock, which running
+ * rows count from.
  */
-export function subagentListModel(state: SubagentListState | undefined, refreshFailed: boolean, expansionOf?: RunExpansionOf): PluginListModel {
+export function subagentListModel(state: SubagentListState | undefined, refreshFailed: boolean, expansionOf?: RunExpansionOf, now = Date.now()): PluginListModel {
   if (state === undefined) return { read: "reading", groups: [], words: LIST_WORDS };
   if (state.kind === "unknown") return { read: "failed", groups: [], words: { ...LIST_WORDS, failed: state.reason } };
   if (state.kind === "empty" && refreshFailed) return { read: "failed", groups: [], words: { ...LIST_WORDS, failed: STALE_EMPTY } };
@@ -120,8 +126,8 @@ export function subagentListModel(state: SubagentListState | undefined, refreshF
     read: refreshFailed ? "failed" : "ready",
     words: LIST_WORDS,
     groups: [
-      { id: "running", heading: "Running", rows: rows.filter((row) => row.status === "running").map((row) => listRow(row, expansionOf)) },
-      { id: "finished", heading: "Finished", rows: rows.filter((row) => row.status !== "running").map((row) => listRow(row)) },
+      { id: "running", heading: "Running", rows: rows.filter((row) => row.status === "running").map((row) => listRow(row, now, expansionOf)) },
+      { id: "finished", heading: "Finished", rows: rows.filter((row) => row.status !== "running").map((row) => listRow(row, now)) },
     ],
   };
 }
