@@ -41,6 +41,7 @@ describe("one run's presentation", () => {
     expect(runPresentation({ ...row, status: "running", lastActivity: "reading files" })).toMatchObject({ label: "Working", tone: "running" });
     expect(runPresentation({ ...row, status: "done" })).toMatchObject({ label: "Done", tone: "settled" });
     expect(runPresentation({ ...row, status: "failed" })).toMatchObject({ label: "Failed", tone: "problem" });
+    expect(runPresentation({ ...row, status: "stopped" })).toMatchObject({ label: "Stopped", tone: "settled" });
     expect(runPresentation({ ...row, status: "lost" })).toMatchObject({ label: "Lost", tone: "problem" });
     expect(runPresentation({ ...row, status: "unknown" })).toMatchObject({ label: "Unknown", tone: "unknown" });
   });

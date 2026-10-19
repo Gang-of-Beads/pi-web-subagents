@@ -1,9 +1,9 @@
 // src/server-plugin.ts
-import { basename, dirname } from "node:path";
+import { basename as basename2, dirname as dirname2 } from "node:path";
 
 // src/server/runs.ts
 import { open, readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 var RUNNING_STALE_AFTER_MS = 10 * 60 * 1e3;
 var PARENT_ACTIVE_STALE_AFTER_MS = 30 * 60 * 1e3;
 var SILENT_LAUNCH_GRACE_MS = 5 * 60 * 1e3;
@@ -34,11 +34,11 @@ async function listSubagentRuns(sessionDir, parentSessionId, now = Date.now(), o
   return describeParentRuns(sessionDir, parentSessionId, now, options, candidates, snapshot);
 }
 async function parentRunCandidates(sessionDir, parentSessionId) {
-  const [directoryRunIds, named] = await Promise.all([
+  const [directoryRunIds, records] = await Promise.all([
     listDirectories(join(sessionDir, parentSessionId)),
-    runIdsNamedByParent(join(sessionDir, `${parentSessionId}.jsonl`))
+    recordsOfParent(join(sessionDir, `${parentSessionId}.jsonl`), parentSessionId)
   ]);
-  return { directoryRunIds, named };
+  return { directoryRunIds, named: records.ids, notified: records.notified };
 }
 async function readArtifactSnapshot(artifactsDir) {
   const names = await listNames(artifactsDir);
@@ -61,7 +61,7 @@ async function describeParentRuns(sessionDir, parentSessionId, now, options, can
   const listedToolRunIds = /* @__PURE__ */ new Set();
   for (const runId of runIds) {
     if (listedToolRunIds.has(runId)) continue;
-    const run = await describeRun(runsDir, runId, artifacts, running, now, parentActive);
+    const run = await describeRun(runsDir, runId, artifacts, running, candidates.notified, now, parentActive);
     if (run === void 0) continue;
     if (run.toolRunId !== void 0) listedToolRunIds.add(run.toolRunId);
     runs.push(run);
@@ -100,19 +100,62 @@ function agentFromArtifactName(name, runId) {
   return agent === "" ? void 0 : agent;
 }
 var RUN_ID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gu;
-async function runIdsNamedByParent(sessionFile) {
+async function recordsOfParent(sessionFile, parentSessionId) {
   const stats = await statOrUndefined(sessionFile);
-  if (stats === void 0) return /* @__PURE__ */ new Set();
+  if (stats === void 0) return { ids: /* @__PURE__ */ new Set(), notified: emptyNotifiedOutcomes() };
   const cached = spawnedRunIdCache.get(sessionFile);
-  if (cached !== void 0 && cached.size <= stats.size && cached.mtimeMs === stats.mtimeMs) return cached.ids;
+  if (cached !== void 0 && cached.size <= stats.size && cached.mtimeMs === stats.mtimeMs) return cached;
   const from = cached === void 0 || cached.size > stats.size ? 0 : cached.size;
-  const ids = cached === void 0 || from === 0 ? /* @__PURE__ */ new Set() : cached.ids;
+  const fresh = cached === void 0 || from === 0;
+  const ids = fresh ? /* @__PURE__ */ new Set() : cached.ids;
+  const notified = fresh ? emptyNotifiedOutcomes() : cached.notified;
   const text = await readRange(sessionFile, from, stats.size);
   if (text !== void 0) {
-    for (const line of text.split("\n")) collectSpawnedRunIds(line, ids);
+    for (const line of text.split("\n")) {
+      collectSpawnedRunIds(line, ids);
+      collectNotifiedOutcomes(line, parentSessionId, notified);
+    }
   }
-  spawnedRunIdCache.set(sessionFile, { size: stats.size, mtimeMs: stats.mtimeMs, ids });
-  return ids;
+  spawnedRunIdCache.set(sessionFile, { size: stats.size, mtimeMs: stats.mtimeMs, ids, notified });
+  return { ids, notified };
+}
+function emptyNotifiedOutcomes() {
+  return { byToolRunId: /* @__PURE__ */ new Map(), toolRunIdByDirectory: /* @__PURE__ */ new Map() };
+}
+var NOTIFIED_STATUS = {
+  completed: "done",
+  failed: "failed",
+  stopped: "stopped"
+};
+function collectNotifiedOutcomes(line, parentSessionId, notified) {
+  if (!line.includes('"subagent-notify"')) return;
+  let parsed;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (!isRecord(parsed) || parsed["customType"] !== "subagent-notify") return;
+  const details = parsed["details"];
+  const runs = isRecord(details) ? details["runs"] : void 0;
+  if (!Array.isArray(runs)) return;
+  for (const run of runs) {
+    if (!isRecord(run)) continue;
+    const runId = run["runId"];
+    const rawStatus = run["status"];
+    if (typeof runId !== "string" || runId === "") continue;
+    const sessionValue = run["sessionValue"];
+    const directory = typeof sessionValue === "string" ? childDirectoryOf(sessionValue, parentSessionId) : void 0;
+    if (directory !== void 0) notified.toolRunIdByDirectory.set(directory, runId);
+    const status = typeof rawStatus === "string" && Object.hasOwn(NOTIFIED_STATUS, rawStatus) ? NOTIFIED_STATUS[rawStatus] : void 0;
+    if (status === void 0) continue;
+    const durationMs = run["durationMs"];
+    notified.byToolRunId.set(runId, { status, ...typeof durationMs === "number" ? { durationMs } : {} });
+  }
+}
+function childDirectoryOf(sessionFile, parentSessionId) {
+  const runDir = dirname(dirname(sessionFile));
+  return basename(dirname(runDir)) === parentSessionId && basename(dirname(sessionFile)).startsWith("run-") ? basename(runDir) : void 0;
 }
 var spawnedRunIdCache = /* @__PURE__ */ new Map();
 async function readRange(path, from, to) {
@@ -147,14 +190,16 @@ function collectSpawnedRunIds(line, ids) {
     for (const id of JSON.stringify(part).matchAll(RUN_ID_PATTERN)) ids.add(id[0]);
   }
 }
-async function describeRun(runsDir, runId, artifacts, runningByRunId, now, parentActive) {
+async function describeRun(runsDir, runId, artifacts, runningByRunId, notified, now, parentActive) {
   const runDir = join(runsDir, runId);
   const running = runningByRunId.get(runId);
   if (running === void 0 && !await looksLikeRun(runDir, runId, artifacts)) return void 0;
   const transcript = await findTranscript(runDir);
   const identity = transcript === void 0 ? void 0 : await readRunIdentity(transcript);
-  const artifact = artifacts.get(identity?.runId ?? runId) ?? artifacts.get(runId);
-  const artifactRunId = identity?.runId !== void 0 && artifacts.has(identity.runId) ? identity.runId : runId;
+  const linkedRunId = identity?.runId ?? notified.toolRunIdByDirectory.get(runId);
+  const artifact = artifacts.get(linkedRunId ?? runId) ?? artifacts.get(runId);
+  const artifactRunId = linkedRunId !== void 0 && artifacts.has(linkedRunId) ? linkedRunId : runId;
+  const outcome = notified.byToolRunId.get(linkedRunId ?? runId);
   let startedAt = artifact?.timestamp;
   let lastWriteMs;
   if (transcript !== void 0) {
@@ -174,17 +219,19 @@ async function describeRun(runsDir, runId, artifacts, runningByRunId, now, paren
     if (dirStats === void 0 && artifact === void 0) return void 0;
     startedAt = (dirStats?.birthtime ?? new Date(now)).toISOString();
   }
-  const status = runStatus(artifact, lastWriteMs, Date.parse(startedAt), now, parentActive);
+  const status = outcome?.status ?? runStatus(artifact, lastWriteMs, Date.parse(startedAt), now, parentActive);
   const agent = artifact?.agent ?? identity?.agent ?? running?.agent ?? "subagent";
   const label = artifact?.task ?? artifact?.outputSummary;
-  const elapsedMs = artifact?.durationMs ?? Math.max(0, (lastWriteMs ?? now) - Date.parse(startedAt));
+  const elapsedMs = artifact?.durationMs ?? outcome?.durationMs ?? Math.max(0, (lastWriteMs ?? now) - Date.parse(startedAt));
+  const error = status === "failed" ? artifact?.error : void 0;
   const lastActivity = status === "running" && transcript !== void 0 ? await lastTranscriptStep(transcript) : void 0;
-  const toolRunId = identity?.runId ?? (running === void 0 ? void 0 : runId);
+  const toolRunId = linkedRunId ?? (running === void 0 ? void 0 : runId);
   const control = status === "running" ? await runControl(toolRunId === void 0 ? void 0 : runningByRunId.get(toolRunId)) : void 0;
   return {
     runId: artifactRunId,
     agent,
     status,
+    ...error === void 0 ? {} : { error },
     elapsedMs,
     startedAt,
     ...lastActivity === void 0 ? {} : { lastActivity },
@@ -327,6 +374,7 @@ async function readArtifacts(artifactsDir, names) {
       ...typeof record["durationMs"] === "number" ? { durationMs: record["durationMs"] } : {},
       ...typeof record["toolCount"] === "number" ? { toolCount: record["toolCount"] } : {},
       ...typeof record["timestamp"] === "string" ? { timestamp: record["timestamp"] } : {},
+      ...typeof record["error"] === "string" && record["error"].trim() !== "" ? { error: summarize(record["error"]) } : {},
       hasOutput: outputs.has(runId),
       // Reading a `meta.json` at all is the run's own report that it ended.
       reported: true
@@ -440,6 +488,7 @@ function runsAsJson(runs) {
     runId: run.runId,
     agent: run.agent,
     status: run.status,
+    ...run.error === void 0 ? {} : { error: run.error },
     elapsedMs: run.elapsedMs,
     startedAt: run.startedAt,
     ...run.lastActivity === void 0 ? {} : { lastActivity: run.lastActivity },
@@ -460,21 +509,21 @@ var plugin = {
       workPaths: [{ root: "session-dir", path: "subagent-artifacts" }, { root: "session-stem", path: "" }]
     },
     backgroundWork: async (session) => {
-      const runs = await listSubagentRuns(dirname(session.sessionFile), basename(session.sessionFile, ".jsonl"), Date.now(), { parentActive: session.parentActive });
+      const runs = await listSubagentRuns(dirname2(session.sessionFile), basename2(session.sessionFile, ".jsonl"), Date.now(), { parentActive: session.parentActive });
       return { running: runs.filter((run) => run.status === "running").length };
     },
     operations: {
       "runs.list": async (input) => {
         const sessionFile = sessionFileFrom(input);
         if (sessionFile === void 0) return { known: false, reason: "no-session" };
-        const runs = await listSubagentRuns(dirname(sessionFile), basename(sessionFile, ".jsonl"), Date.now());
+        const runs = await listSubagentRuns(dirname2(sessionFile), basename2(sessionFile, ".jsonl"), Date.now());
         return { known: true, runs: runsAsJson(runs) };
       },
       "runs.output": async (input) => {
         const sessionFile = sessionFileFrom(input);
         const runId = typeof input === "object" && input !== null ? Reflect.get(input, "runId") : void 0;
         if (sessionFile === void 0 || typeof runId !== "string" || runId === "") return { known: false, reason: "no-run" };
-        const output = await readSubagentRunOutput(dirname(sessionFile), runId, { parentSessionId: basename(sessionFile, ".jsonl") });
+        const output = await readSubagentRunOutput(dirname2(sessionFile), runId, { parentSessionId: basename2(sessionFile, ".jsonl") });
         return output === void 0 ? { known: false, reason: "not-written" } : { known: true, output };
       }
     }

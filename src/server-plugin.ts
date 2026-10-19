@@ -26,6 +26,7 @@ function runsAsJson(runs: readonly SubagentRunInfo[]): JsonValue {
     runId: run.runId,
     agent: run.agent,
     status: run.status,
+    ...(run.error === undefined ? {} : { error: run.error }),
     elapsedMs: run.elapsedMs,
     startedAt: run.startedAt,
     ...(run.lastActivity === undefined ? {} : { lastActivity: run.lastActivity }),

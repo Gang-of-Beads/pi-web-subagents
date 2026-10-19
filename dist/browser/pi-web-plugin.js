@@ -29,7 +29,9 @@ function runPresentation(row) {
     return { label: "Working", tone: "running", detail: activity === void 0 ? `${elapsed} so far` : `${elapsed} \xB7 ${activity}` };
   }
   if (row.status === "done") return { label: "Done", tone: "settled", detail: `${elapsed}${row.hasOutput ? "" : " \xB7 no output written"}` };
-  if (row.status === "failed") return { label: "Failed", tone: "problem", detail: `${elapsed}${activity === void 0 ? "" : ` \xB7 ${activity}`}` };
+  if (row.status === "stopped") return { label: "Stopped", tone: "settled", detail: elapsed };
+  const reason = row.error ?? activity;
+  if (row.status === "failed") return { label: "Failed", tone: "problem", detail: `${elapsed}${reason === void 0 || reason === "" ? "" : ` \xB7 ${reason}`}` };
   if (row.status === "lost") {
     return { label: "Lost", tone: "problem", detail: `Wrote for ${elapsed}, then went silent without an outcome` };
   }
@@ -89,7 +91,8 @@ function isRunRow(value) {
   const agent = Reflect.get(value, "agent");
   const status = Reflect.get(value, "status");
   const toolRunId = Reflect.get(value, "toolRunId");
-  return typeof runId === "string" && (toolRunId === void 0 || typeof toolRunId === "string") && typeof agent === "string" && (status === "running" || status === "done" || status === "failed" || status === "lost" || status === "unknown");
+  const error = Reflect.get(value, "error");
+  return typeof runId === "string" && (toolRunId === void 0 || typeof toolRunId === "string") && (error === void 0 || typeof error === "string") && typeof agent === "string" && (status === "running" || status === "done" || status === "failed" || status === "stopped" || status === "lost" || status === "unknown");
 }
 
 // src/runControls.ts

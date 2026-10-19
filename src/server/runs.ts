@@ -1,5 +1,5 @@
 import { open, readdir, readFile, stat } from "node:fs/promises";
-import { join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 /**
  * One subagent-tool run belonging to a parent session.
@@ -12,7 +12,9 @@ export interface SubagentRunInfo {
   readonly runId: string;
   readonly agent: string;
   /** "lost": started, wrote, went silent without an outcome. Not "failed", which reported one. */
-  readonly status: "running" | "done" | "failed" | "lost" | "unknown";
+  readonly status: "running" | "done" | "failed" | "stopped" | "lost" | "unknown";
+  /** What a failed run reported as its error, first line only. */
+  readonly error?: string;
   /** Wall-clock milliseconds: reported when finished, elapsed while running. */
   readonly elapsedMs: number;
   readonly startedAt: string;
@@ -149,6 +151,7 @@ interface RunArtifact {
   durationMs?: number;
   toolCount?: number;
   timestamp?: string;
+  error?: string;
   hasOutput: boolean;
   /**
    * Set only once the run wrote its `meta.json`, which the tool does when the
@@ -195,14 +198,15 @@ export async function listSubagentRuns(
 interface ParentRunCandidates {
   directoryRunIds: string[];
   named: Set<string>;
+  notified: NotifiedOutcomes;
 }
 
 async function parentRunCandidates(sessionDir: string, parentSessionId: string): Promise<ParentRunCandidates> {
-  const [directoryRunIds, named] = await Promise.all([
+  const [directoryRunIds, records] = await Promise.all([
     listDirectories(join(sessionDir, parentSessionId)),
-    runIdsNamedByParent(join(sessionDir, `${parentSessionId}.jsonl`)),
+    recordsOfParent(join(sessionDir, `${parentSessionId}.jsonl`), parentSessionId),
   ]);
-  return { directoryRunIds, named };
+  return { directoryRunIds, named: records.ids, notified: records.notified };
 }
 
 async function readArtifactSnapshot(artifactsDir: string): Promise<SubagentArtifactSnapshot> {
@@ -238,7 +242,7 @@ async function describeParentRuns(
   const listedToolRunIds = new Set<string>();
   for (const runId of runIds) {
     if (listedToolRunIds.has(runId)) continue;
-    const run = await describeRun(runsDir, runId, artifacts, running, now, parentActive);
+    const run = await describeRun(runsDir, runId, artifacts, running, candidates.notified, now, parentActive);
     if (run === undefined) continue;
     if (run.toolRunId !== undefined) listedToolRunIds.add(run.toolRunId);
     runs.push(run);
@@ -361,21 +365,100 @@ const RUN_ID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
  * ids belonging to other sessions. Only the tool's own call and result say "I
  * started this".
  */
-async function runIdsNamedByParent(sessionFile: string): Promise<Set<string>> {
+async function recordsOfParent(sessionFile: string, parentSessionId: string): Promise<ParentRecords> {
   const stats = await statOrUndefined(sessionFile);
-  if (stats === undefined) return new Set();
+  if (stats === undefined) return { ids: new Set(), notified: emptyNotifiedOutcomes() };
   const cached = spawnedRunIdCache.get(sessionFile);
   // A transcript is only ever appended to, so everything already scanned stays
   // true and only the new tail can name a new run.
-  if (cached !== undefined && cached.size <= stats.size && cached.mtimeMs === stats.mtimeMs) return cached.ids;
+  if (cached !== undefined && cached.size <= stats.size && cached.mtimeMs === stats.mtimeMs) return cached;
   const from = cached === undefined || cached.size > stats.size ? 0 : cached.size;
-  const ids = cached === undefined || from === 0 ? new Set<string>() : cached.ids;
+  const fresh = cached === undefined || from === 0;
+  const ids = fresh ? new Set<string>() : cached.ids;
+  const notified = fresh ? emptyNotifiedOutcomes() : cached.notified;
   const text = await readRange(sessionFile, from, stats.size);
   if (text !== undefined) {
-    for (const line of text.split("\n")) collectSpawnedRunIds(line, ids);
+    for (const line of text.split("\n")) {
+      collectSpawnedRunIds(line, ids);
+      collectNotifiedOutcomes(line, parentSessionId, notified);
+    }
   }
-  spawnedRunIdCache.set(sessionFile, { size: stats.size, mtimeMs: stats.mtimeMs, ids });
-  return ids;
+  spawnedRunIdCache.set(sessionFile, { size: stats.size, mtimeMs: stats.mtimeMs, ids, notified });
+  return { ids, notified };
+}
+
+interface ParentRecords {
+  ids: Set<string>;
+  notified: NotifiedOutcomes;
+}
+
+/**
+ * Outcomes the subagent tool told this parent, keyed by the tool's run id, and
+ * the tool run id each child directory belongs to.
+ *
+ * The tool's `subagent-notify` message carries `details.runs[]` for hosts (its
+ * own comment: "Hosts match runs by id"): `runId`, `status` and, for a child
+ * session, `sessionValue`, the path of the child's transcript under this
+ * parent's run directory. That path is the only record linking a child that
+ * failed before writing its transcript to the tool's run: without it the
+ * directory had nothing to name its run by, the run's `meta.json` was never
+ * found, and a run that reported its error read as unknown, then lost. And the
+ * status is the only record that a run was stopped: `meta.json` says only
+ * `exitCode: 1`, which read as failed.
+ */
+interface NotifiedOutcomes {
+  byToolRunId: Map<string, NotifiedOutcome>;
+  toolRunIdByDirectory: Map<string, string>;
+}
+
+interface NotifiedOutcome {
+  status: "done" | "failed" | "stopped";
+  durationMs?: number;
+}
+
+function emptyNotifiedOutcomes(): NotifiedOutcomes {
+  return { byToolRunId: new Map(), toolRunIdByDirectory: new Map() };
+}
+
+/** The tool's outcome words that end a run; `paused` does not, so it is no outcome here. */
+const NOTIFIED_STATUS: Readonly<Record<string, NotifiedOutcome["status"]>> = {
+  completed: "done",
+  failed: "failed",
+  stopped: "stopped",
+};
+
+/** Adds the outcomes one parent transcript line reports, later reports replacing earlier ones. */
+function collectNotifiedOutcomes(line: string, parentSessionId: string, notified: NotifiedOutcomes): void {
+  if (!line.includes("\"subagent-notify\"")) return;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return;
+  }
+  if (!isRecord(parsed) || parsed["customType"] !== "subagent-notify") return;
+  const details: unknown = parsed["details"];
+  const runs: unknown = isRecord(details) ? details["runs"] : undefined;
+  if (!Array.isArray(runs)) return;
+  for (const run of runs) {
+    if (!isRecord(run)) continue;
+    const runId = run["runId"];
+    const rawStatus = run["status"];
+    if (typeof runId !== "string" || runId === "") continue;
+    const sessionValue = run["sessionValue"];
+    const directory = typeof sessionValue === "string" ? childDirectoryOf(sessionValue, parentSessionId) : undefined;
+    if (directory !== undefined) notified.toolRunIdByDirectory.set(directory, runId);
+    const status = typeof rawStatus === "string" && Object.hasOwn(NOTIFIED_STATUS, rawStatus) ? NOTIFIED_STATUS[rawStatus] : undefined;
+    if (status === undefined) continue;
+    const durationMs = run["durationMs"];
+    notified.byToolRunId.set(runId, { status, ...(typeof durationMs === "number" ? { durationMs } : {}) });
+  }
+}
+
+/** `<sessionDir>/<parentSessionId>/<directory>/run-N/session.jsonl` -> `<directory>`, for this parent only. */
+function childDirectoryOf(sessionFile: string, parentSessionId: string): string | undefined {
+  const runDir = dirname(dirname(sessionFile));
+  return basename(dirname(runDir)) === parentSessionId && basename(dirname(sessionFile)).startsWith("run-") ? basename(runDir) : undefined;
 }
 
 /**
@@ -385,7 +468,7 @@ async function runIdsNamedByParent(sessionFile: string): Promise<Set<string>> {
  * the regression `readWindow` exists to prevent. Keyed by size and mtime so a
  * rewritten or truncated file is rescanned rather than trusted.
  */
-const spawnedRunIdCache = new Map<string, { size: number; mtimeMs: number; ids: Set<string> }>();
+const spawnedRunIdCache = new Map<string, { size: number; mtimeMs: number } & ParentRecords>();
 
 /** The bytes appended since the last scan, so a growing transcript is read once. */
 async function readRange(path: string, from: number, to: number): Promise<string | undefined> {
@@ -425,7 +508,7 @@ function collectSpawnedRunIds(line: string, ids: Set<string>): void {
   }
 }
 
-async function describeRun(runsDir: string, runId: string, artifacts: Map<string, RunArtifact>, runningByRunId: Map<string, RunningArtifact>, now: number, parentActive: boolean): Promise<SubagentRunInfo | undefined> {
+async function describeRun(runsDir: string, runId: string, artifacts: Map<string, RunArtifact>, runningByRunId: Map<string, RunningArtifact>, notified: NotifiedOutcomes, now: number, parentActive: boolean): Promise<SubagentRunInfo | undefined> {
   const runDir = join(runsDir, runId);
   const running = runningByRunId.get(runId);
   // A live transcript is the run announcing itself; it needs no directory.
@@ -437,10 +520,13 @@ async function describeRun(runsDir: string, runId: string, artifacts: Map<string
   // ("subagent-<agent>-<runId>-<attempt>"), which is the only link between
   // them; without following it every finished run reported "unknown", showed
   // the generic agent name, and could not be opened because its output looked
-  // absent.
+  // absent. A child that failed before writing its transcript is linked by
+  // the outcome the tool told the parent instead.
   const identity = transcript === undefined ? undefined : await readRunIdentity(transcript);
-  const artifact = artifacts.get(identity?.runId ?? runId) ?? artifacts.get(runId);
-  const artifactRunId = identity?.runId !== undefined && artifacts.has(identity.runId) ? identity.runId : runId;
+  const linkedRunId = identity?.runId ?? notified.toolRunIdByDirectory.get(runId);
+  const artifact = artifacts.get(linkedRunId ?? runId) ?? artifacts.get(runId);
+  const artifactRunId = linkedRunId !== undefined && artifacts.has(linkedRunId) ? linkedRunId : runId;
+  const outcome = notified.byToolRunId.get(linkedRunId ?? runId);
   let startedAt = artifact?.timestamp;
   let lastWriteMs: number | undefined;
   if (transcript !== undefined) {
@@ -465,20 +551,22 @@ async function describeRun(runsDir: string, runId: string, artifacts: Map<string
     if (dirStats === undefined && artifact === undefined) return undefined;
     startedAt = (dirStats?.birthtime ?? new Date(now)).toISOString();
   }
-  const status = runStatus(artifact, lastWriteMs, Date.parse(startedAt), now, parentActive);
+  const status = outcome?.status ?? runStatus(artifact, lastWriteMs, Date.parse(startedAt), now, parentActive);
   const agent = artifact?.agent ?? identity?.agent ?? running?.agent ?? "subagent";
   // What the row says this run was: its own description when the tool kept one,
   // otherwise the first line of what it returned.
   const label = artifact?.task ?? artifact?.outputSummary;
-  const elapsedMs = artifact?.durationMs ?? Math.max(0, (lastWriteMs ?? now) - Date.parse(startedAt));
+  const elapsedMs = artifact?.durationMs ?? outcome?.durationMs ?? Math.max(0, (lastWriteMs ?? now) - Date.parse(startedAt));
+  const error = status === "failed" ? artifact?.error : undefined;
   const lastActivity = status === "running" && transcript !== undefined ? await lastTranscriptStep(transcript) : undefined;
   // A run reached through its live artifact is already named by the tool's id.
-  const toolRunId = identity?.runId ?? (running === undefined ? undefined : runId);
+  const toolRunId = linkedRunId ?? (running === undefined ? undefined : runId);
   const control = status === "running" ? await runControl(toolRunId === undefined ? undefined : runningByRunId.get(toolRunId)) : undefined;
   return {
     runId: artifactRunId,
     agent,
     status,
+    ...(error === undefined ? {} : { error }),
     elapsedMs,
     startedAt,
     ...(lastActivity === undefined ? {} : { lastActivity }),
@@ -688,6 +776,7 @@ async function readArtifacts(artifactsDir: string, names: readonly string[]): Pr
       ...(typeof record["durationMs"] === "number" ? { durationMs: record["durationMs"] } : {}),
       ...(typeof record["toolCount"] === "number" ? { toolCount: record["toolCount"] } : {}),
       ...(typeof record["timestamp"] === "string" ? { timestamp: record["timestamp"] } : {}),
+      ...(typeof record["error"] === "string" && record["error"].trim() !== "" ? { error: summarize(record["error"]) } : {}),
       hasOutput: outputs.has(runId),
       // Reading a `meta.json` at all is the run's own report that it ended.
       reported: true,

@@ -13,7 +13,9 @@ import type { PluginListModel, PluginListRow, PluginRowExpansion } from "@gang-o
 export interface SubagentRunRow {
   runId: string;
   agent: string;
-  status: "running" | "done" | "failed" | "lost" | "unknown";
+  status: "running" | "done" | "failed" | "stopped" | "lost" | "unknown";
+  /** What a failed run reported as its error. */
+  error?: string;
   elapsedMs: number;
   startedAt: string;
   lastActivity?: string;
@@ -60,7 +62,9 @@ export function runPresentation(row: SubagentRunRow): RunPresentation {
     return { label: "Working", tone: "running", detail: activity === undefined ? `${elapsed} so far` : `${elapsed} · ${activity}` };
   }
   if (row.status === "done") return { label: "Done", tone: "settled", detail: `${elapsed}${row.hasOutput ? "" : " · no output written"}` };
-  if (row.status === "failed") return { label: "Failed", tone: "problem", detail: `${elapsed}${activity === undefined ? "" : ` · ${activity}`}` };
+  if (row.status === "stopped") return { label: "Stopped", tone: "settled", detail: elapsed };
+  const reason = row.error ?? activity;
+  if (row.status === "failed") return { label: "Failed", tone: "problem", detail: `${elapsed}${reason === undefined || reason === "" ? "" : ` · ${reason}`}` };
   if (row.status === "lost") {
     return { label: "Lost", tone: "problem", detail: `Wrote for ${elapsed}, then went silent without an outcome` };
   }
@@ -142,8 +146,10 @@ function isRunRow(value: unknown): value is Omit<SubagentRunRow, "control"> {
   const agent: unknown = Reflect.get(value, "agent");
   const status: unknown = Reflect.get(value, "status");
   const toolRunId: unknown = Reflect.get(value, "toolRunId");
+  const error: unknown = Reflect.get(value, "error");
   return typeof runId === "string"
     && (toolRunId === undefined || typeof toolRunId === "string")
+    && (error === undefined || typeof error === "string")
     && typeof agent === "string"
-    && (status === "running" || status === "done" || status === "failed" || status === "lost" || status === "unknown");
+    && (status === "running" || status === "done" || status === "failed" || status === "stopped" || status === "lost" || status === "unknown");
 }
