@@ -60,7 +60,7 @@ export class SubagentRunControls extends LitElement {
 }
 
 export function defineRunControls(): void {
-  void SubagentRunControls;
+  if (customElements.get("subagent-run-controls") === undefined) customElements.define("subagent-run-controls", SubagentRunControls);
 }
 
 declare global {
@@ -68,5 +68,3 @@ declare global {
     "subagent-run-controls": SubagentRunControls;
   }
 }
-
-if (customElements.get("subagent-run-controls") === undefined) customElements.define("subagent-run-controls", SubagentRunControls);

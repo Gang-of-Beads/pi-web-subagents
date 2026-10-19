@@ -792,9 +792,8 @@ __decorateClass([
   n4({ attribute: false })
 ], SubagentRunControls.prototype, "onStop", 2);
 function defineRunControls() {
-  void SubagentRunControls;
+  if (customElements.get("subagent-run-controls") === void 0) customElements.define("subagent-run-controls", SubagentRunControls);
 }
-if (customElements.get("subagent-run-controls") === void 0) customElements.define("subagent-run-controls", SubagentRunControls);
 
 // src/runsRead.ts
 var READ_PRESUMED_DEAD_MS = 35e3;

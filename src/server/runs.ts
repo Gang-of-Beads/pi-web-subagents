@@ -31,7 +31,7 @@ export interface SubagentRunInfo {
    * a running run's `runId` is its child session's directory until it reports.
    */
   readonly toolRunId?: string;
-  /** For a running run: whether the tool runs it detached (`async`) or inside the parent's reply (`foreground`). */
+  /** For a running run: whether the tool runs it detached (`async`) or inside the parent's reply (`foreground`), or `unknown` when its transcript does not say. */
   readonly control?: RunControl;
 }
 
@@ -358,7 +358,9 @@ const RUN_ID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 
 /**
  * Run ids this session's own agent started, read from the `subagent` tool
- * records in its transcript.
+ * records in its transcript, and the outcomes the tool notified there
+ * (`subagent-notify`: status, error, and the child session that links a run's
+ * directory to its tool run id).
  *
  * Scoped to those records rather than matched against the whole file: a
  * transcript is also full of prose, and this session spent a day discussing run
@@ -368,7 +370,7 @@ const RUN_ID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]
 async function recordsOfParent(sessionFile: string, parentSessionId: string): Promise<ParentRecords> {
   const stats = await statOrUndefined(sessionFile);
   if (stats === undefined) return { ids: new Set(), notified: emptyNotifiedOutcomes() };
-  const cached = spawnedRunIdCache.get(sessionFile);
+  const cached = parentRecordsCache.get(sessionFile);
   // A transcript is only ever appended to, so everything already scanned stays
   // true and only the new tail can name a new run.
   if (cached !== undefined && cached.size <= stats.size && cached.mtimeMs === stats.mtimeMs) return cached;
@@ -383,7 +385,7 @@ async function recordsOfParent(sessionFile: string, parentSessionId: string): Pr
       collectNotifiedOutcomes(line, parentSessionId, notified);
     }
   }
-  spawnedRunIdCache.set(sessionFile, { size: stats.size, mtimeMs: stats.mtimeMs, ids, notified });
+  parentRecordsCache.set(sessionFile, { size: stats.size, mtimeMs: stats.mtimeMs, ids, notified });
   return { ids, notified };
 }
 
@@ -462,13 +464,14 @@ function childDirectoryOf(sessionFile: string, parentSessionId: string): string 
 }
 
 /**
- * Spawn records already read from each parent transcript.
+ * Records already read from each parent transcript: the run ids its agent spawned and the
+ * outcomes the tool notified there (with their directory links).
  *
  * Rescanning cost ~300ms of a 129MB read on every four-second poll, which is
  * the regression `readWindow` exists to prevent. Keyed by size and mtime so a
  * rewritten or truncated file is rescanned rather than trusted.
  */
-const spawnedRunIdCache = new Map<string, { size: number; mtimeMs: number } & ParentRecords>();
+const parentRecordsCache = new Map<string, { size: number; mtimeMs: number } & ParentRecords>();
 
 /** The bytes appended since the last scan, so a growing transcript is read once. */
 async function readRange(path: string, from: number, to: number): Promise<string | undefined> {
@@ -602,8 +605,9 @@ async function runControl(running: RunningArtifact | undefined): Promise<RunCont
 }
 
 /**
- * Status comes from the artifact when there is one, because that is the run's
- * own verdict. Without it the only evidence is the transcript's mtime: a child
+ * This is the fallback when the parent transcript holds no notified outcome for
+ * the run (only that outcome can say "stopped"). Here status comes from the
+ * artifact when there is one, because that is the run's own verdict. Without it the only evidence is the transcript's mtime: a child
  * that has written recently is working, and one that stopped writing without
  * ever reporting was killed with its parent - saying "unknown" is honest, where
  * "running" would leave a ghost in the list forever.

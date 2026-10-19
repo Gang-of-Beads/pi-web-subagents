@@ -103,7 +103,7 @@ var RUN_ID_PATTERN = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 async function recordsOfParent(sessionFile, parentSessionId) {
   const stats = await statOrUndefined(sessionFile);
   if (stats === void 0) return { ids: /* @__PURE__ */ new Set(), notified: emptyNotifiedOutcomes() };
-  const cached = spawnedRunIdCache.get(sessionFile);
+  const cached = parentRecordsCache.get(sessionFile);
   if (cached !== void 0 && cached.size <= stats.size && cached.mtimeMs === stats.mtimeMs) return cached;
   const from = cached === void 0 || cached.size > stats.size ? 0 : cached.size;
   const fresh = cached === void 0 || from === 0;
@@ -116,7 +116,7 @@ async function recordsOfParent(sessionFile, parentSessionId) {
       collectNotifiedOutcomes(line, parentSessionId, notified);
     }
   }
-  spawnedRunIdCache.set(sessionFile, { size: stats.size, mtimeMs: stats.mtimeMs, ids, notified });
+  parentRecordsCache.set(sessionFile, { size: stats.size, mtimeMs: stats.mtimeMs, ids, notified });
   return { ids, notified };
 }
 function emptyNotifiedOutcomes() {
@@ -157,7 +157,7 @@ function childDirectoryOf(sessionFile, parentSessionId) {
   const runDir = dirname(dirname(sessionFile));
   return basename(dirname(runDir)) === parentSessionId && basename(dirname(sessionFile)).startsWith("run-") ? basename(runDir) : void 0;
 }
-var spawnedRunIdCache = /* @__PURE__ */ new Map();
+var parentRecordsCache = /* @__PURE__ */ new Map();
 async function readRange(path, from, to) {
   if (to <= from) return "";
   let handle;
