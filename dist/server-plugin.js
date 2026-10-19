@@ -58,9 +58,13 @@ async function describeParentRuns(sessionDir, parentSessionId, now, options, can
     ...[...candidates.named].filter((runId) => !owned.has(runId) && (running.has(runId) || artifacts.has(runId)))
   ];
   const runs = [];
+  const listedToolRunIds = /* @__PURE__ */ new Set();
   for (const runId of runIds) {
-    const run = await describeRun(runsDir, runId, artifacts, running.get(runId), now, parentActive);
-    if (run !== void 0) runs.push(run);
+    if (listedToolRunIds.has(runId)) continue;
+    const run = await describeRun(runsDir, runId, artifacts, running, now, parentActive);
+    if (run === void 0) continue;
+    if (run.toolRunId !== void 0) listedToolRunIds.add(run.toolRunId);
+    runs.push(run);
   }
   return runs.sort((a, b) => {
     if (a.status === "running" && b.status !== "running") return -1;
@@ -143,8 +147,9 @@ function collectSpawnedRunIds(line, ids) {
     for (const id of JSON.stringify(part).matchAll(RUN_ID_PATTERN)) ids.add(id[0]);
   }
 }
-async function describeRun(runsDir, runId, artifacts, running, now, parentActive) {
+async function describeRun(runsDir, runId, artifacts, runningByRunId, now, parentActive) {
   const runDir = join(runsDir, runId);
+  const running = runningByRunId.get(runId);
   if (running === void 0 && !await looksLikeRun(runDir, runId, artifacts)) return void 0;
   const transcript = await findTranscript(runDir);
   const identity = transcript === void 0 ? void 0 : await readRunIdentity(transcript);
@@ -174,6 +179,8 @@ async function describeRun(runsDir, runId, artifacts, running, now, parentActive
   const label = artifact?.task ?? artifact?.outputSummary;
   const elapsedMs = artifact?.durationMs ?? Math.max(0, (lastWriteMs ?? now) - Date.parse(startedAt));
   const lastActivity = status === "running" && transcript !== void 0 ? await lastTranscriptStep(transcript) : void 0;
+  const toolRunId = identity?.runId ?? (running === void 0 ? void 0 : runId);
+  const control = status === "running" ? await runControl(toolRunId === void 0 ? void 0 : runningByRunId.get(toolRunId)) : void 0;
   return {
     runId: artifactRunId,
     agent,
@@ -184,8 +191,24 @@ async function describeRun(runsDir, runId, artifacts, running, now, parentActive
     ...label === void 0 ? {} : { task: label },
     ...artifact?.model === void 0 ? {} : { model: artifact.model },
     ...artifact?.toolCount === void 0 ? {} : { toolCount: artifact.toolCount },
-    hasOutput: artifact?.hasOutput === true
+    hasOutput: artifact?.hasOutput === true,
+    ...toolRunId === void 0 ? {} : { toolRunId },
+    ...control === void 0 ? {} : { control }
   };
+}
+async function runControl(running) {
+  if (running === void 0) return "unknown";
+  const head = await readWindow(running.transcriptPath, HEAD_BYTES, "head");
+  const firstLine = head?.split("\n")[0];
+  if (firstLine === void 0 || firstLine === "") return "unknown";
+  let record;
+  try {
+    record = JSON.parse(firstLine);
+  } catch {
+    return "unknown";
+  }
+  const source = isRecord(record) ? record["source"] : void 0;
+  return source === "async" || source === "foreground" ? source : "unknown";
 }
 function runStatus(artifact, lastWriteMs, startedAtMs, now, parentActive) {
   if (artifact?.exitCode !== void 0) return artifact.exitCode === 0 ? "done" : "failed";
@@ -423,7 +446,9 @@ function runsAsJson(runs) {
     ...run.task === void 0 ? {} : { task: run.task },
     ...run.model === void 0 ? {} : { model: run.model },
     ...run.toolCount === void 0 ? {} : { toolCount: run.toolCount },
-    hasOutput: run.hasOutput
+    hasOutput: run.hasOutput,
+    ...run.toolRunId === void 0 ? {} : { toolRunId: run.toolRunId },
+    ...run.control === void 0 ? {} : { control: run.control }
   }));
 }
 var plugin = {

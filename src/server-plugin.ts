@@ -33,6 +33,8 @@ function runsAsJson(runs: readonly SubagentRunInfo[]): JsonValue {
     ...(run.model === undefined ? {} : { model: run.model }),
     ...(run.toolCount === undefined ? {} : { toolCount: run.toolCount }),
     hasOutput: run.hasOutput,
+    ...(run.toolRunId === undefined ? {} : { toolRunId: run.toolRunId }),
+    ...(run.control === undefined ? {} : { control: run.control }),
   }));
 }
 

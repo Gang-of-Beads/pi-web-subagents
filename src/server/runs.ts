@@ -23,7 +23,18 @@ export interface SubagentRunInfo {
   readonly toolCount?: number;
   /** Present once the run has written its result. */
   readonly hasOutput: boolean;
+  /**
+   * The id the subagent tool knows the run by, which its `/subagents-stop` and
+   * `/subagents-steer` commands take. Present when the run's records name it;
+   * a running run's `runId` is its child session's directory until it reports.
+   */
+  readonly toolRunId?: string;
+  /** For a running run: whether the tool runs it detached (`async`) or inside the parent's reply (`foreground`). */
+  readonly control?: RunControl;
 }
+
+/** How a running run is held: its own transcript says, and `unknown` when nothing on disk does. */
+export type RunControl = "async" | "foreground" | "unknown";
 
 /**
  * Subagent-tool runs, read from the layout the tool leaves behind.
@@ -222,9 +233,15 @@ async function describeParentRuns(
     ...[...candidates.named].filter((runId) => !owned.has(runId) && (running.has(runId) || artifacts.has(runId))),
   ];
   const runs: SubagentRunInfo[] = [];
+  // A run the parent names by the tool's id may already be listed through its
+  // directory, whose child session names that id; directories come first.
+  const listedToolRunIds = new Set<string>();
   for (const runId of runIds) {
-    const run = await describeRun(runsDir, runId, artifacts, running.get(runId), now, parentActive);
-    if (run !== undefined) runs.push(run);
+    if (listedToolRunIds.has(runId)) continue;
+    const run = await describeRun(runsDir, runId, artifacts, running, now, parentActive);
+    if (run === undefined) continue;
+    if (run.toolRunId !== undefined) listedToolRunIds.add(run.toolRunId);
+    runs.push(run);
   }
   // Live work first, then most recent: the question this answers is usually
   // "who is still going", and a finished run is history.
@@ -408,8 +425,9 @@ function collectSpawnedRunIds(line: string, ids: Set<string>): void {
   }
 }
 
-async function describeRun(runsDir: string, runId: string, artifacts: Map<string, RunArtifact>, running: RunningArtifact | undefined, now: number, parentActive: boolean): Promise<SubagentRunInfo | undefined> {
+async function describeRun(runsDir: string, runId: string, artifacts: Map<string, RunArtifact>, runningByRunId: Map<string, RunningArtifact>, now: number, parentActive: boolean): Promise<SubagentRunInfo | undefined> {
   const runDir = join(runsDir, runId);
+  const running = runningByRunId.get(runId);
   // A live transcript is the run announcing itself; it needs no directory.
   if (running === undefined && !await looksLikeRun(runDir, runId, artifacts)) return undefined;
   const transcript = await findTranscript(runDir);
@@ -454,6 +472,9 @@ async function describeRun(runsDir: string, runId: string, artifacts: Map<string
   const label = artifact?.task ?? artifact?.outputSummary;
   const elapsedMs = artifact?.durationMs ?? Math.max(0, (lastWriteMs ?? now) - Date.parse(startedAt));
   const lastActivity = status === "running" && transcript !== undefined ? await lastTranscriptStep(transcript) : undefined;
+  // A run reached through its live artifact is already named by the tool's id.
+  const toolRunId = identity?.runId ?? (running === undefined ? undefined : runId);
+  const control = status === "running" ? await runControl(toolRunId === undefined ? undefined : runningByRunId.get(toolRunId)) : undefined;
   return {
     runId: artifactRunId,
     agent,
@@ -465,7 +486,31 @@ async function describeRun(runsDir: string, runId: string, artifacts: Map<string
     ...(artifact?.model === undefined ? {} : { model: artifact.model }),
     ...(artifact?.toolCount === undefined ? {} : { toolCount: artifact.toolCount }),
     hasOutput: artifact?.hasOutput === true,
+    ...(toolRunId === undefined ? {} : { toolRunId }),
+    ...(control === undefined ? {} : { control }),
   };
+}
+
+/**
+ * Whether a running run is detached or part of the parent's reply, from the
+ * run's own artifact transcript: the tool stamps every record of it with
+ * `source: "async"` or `source: "foreground"` from launch. Only the head is
+ * read. A run with no such transcript (the artifact is configured off, or it
+ * has not been opened yet) is `unknown`, never guessed from timing.
+ */
+async function runControl(running: RunningArtifact | undefined): Promise<RunControl> {
+  if (running === undefined) return "unknown";
+  const head = await readWindow(running.transcriptPath, HEAD_BYTES, "head");
+  const firstLine = head?.split("\n")[0];
+  if (firstLine === undefined || firstLine === "") return "unknown";
+  let record: unknown;
+  try {
+    record = JSON.parse(firstLine);
+  } catch {
+    return "unknown";
+  }
+  const source = isRecord(record) ? record["source"] : undefined;
+  return source === "async" || source === "foreground" ? source : "unknown";
 }
 
 /**
