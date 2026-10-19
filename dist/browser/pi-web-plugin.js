@@ -18,7 +18,7 @@ function subagentListState(answer) {
   }
   const raw = Reflect.get(answer, "runs");
   if (!Array.isArray(raw)) return { kind: "unknown", reason: "This machine answered without a run list." };
-  const rows = raw.filter(isRunRow);
+  const rows = raw.filter(isRunRow).map((row) => ({ ...row, control: runControlOf(Reflect.get(row, "control")) }));
   if (rows.length === 0) return { kind: "empty" };
   return { kind: "rows", rows, running: rows.filter((row) => row.status === "running").length };
 }
@@ -41,9 +41,15 @@ var ROW_SIDE = {
   problem: (presentation) => ({ status: { label: presentation.label, tone: "problem" } }),
   unknown: (presentation) => ({ status: { label: presentation.label, tone: "neutral" } })
 };
-function listRow(row) {
+function listRow(row, expansionOf) {
   const presentation = runPresentation(row);
-  return { id: row.runId, title: row.task === void 0 ? row.agent : `${row.agent}: ${row.task}`, ...ROW_SIDE[presentation.tone](presentation), detail: presentation.detail };
+  return {
+    id: row.runId,
+    title: row.task === void 0 ? row.agent : `${row.agent}: ${row.task}`,
+    ...ROW_SIDE[presentation.tone](presentation),
+    detail: presentation.detail,
+    ...expansionOf === void 0 ? {} : { expansion: expansionOf(row) }
+  };
 }
 var STALE_EMPTY = "Could not refresh. The last read found no subagents in this session.";
 var LIST_WORDS = {
@@ -52,7 +58,7 @@ var LIST_WORDS = {
   failed: "This machine could not read the runs.",
   stale: "Could not refresh - showing the last read."
 };
-function subagentListModel(state, refreshFailed) {
+function subagentListModel(state, refreshFailed, expansionOf) {
   if (state === void 0) return { read: "reading", groups: [], words: LIST_WORDS };
   if (state.kind === "unknown") return { read: "failed", groups: [], words: { ...LIST_WORDS, failed: state.reason } };
   if (state.kind === "empty" && refreshFailed) return { read: "failed", groups: [], words: { ...LIST_WORDS, failed: STALE_EMPTY } };
@@ -61,8 +67,8 @@ function subagentListModel(state, refreshFailed) {
     read: refreshFailed ? "failed" : "ready",
     words: LIST_WORDS,
     groups: [
-      { id: "running", heading: "Running", rows: rows.filter((row) => row.status === "running").map(listRow) },
-      { id: "finished", heading: "Finished", rows: rows.filter((row) => row.status !== "running").map(listRow) }
+      { id: "running", heading: "Running", rows: rows.filter((row) => row.status === "running").map((row) => listRow(row, expansionOf)) },
+      { id: "finished", heading: "Finished", rows: rows.filter((row) => row.status !== "running").map((row) => listRow(row)) }
     ]
   };
 }
@@ -74,155 +80,60 @@ function formatElapsed(milliseconds) {
   if (minutes < 60) return `${String(minutes)}m ${String(seconds % 60)}s`;
   return `${String(Math.floor(minutes / 60))}h ${String(minutes % 60)}m`;
 }
+function runControlOf(value) {
+  return value === "async" || value === "foreground" ? value : "unknown";
+}
 function isRunRow(value) {
   if (typeof value !== "object" || value === null) return false;
   const runId = Reflect.get(value, "runId");
   const agent = Reflect.get(value, "agent");
   const status = Reflect.get(value, "status");
-  return typeof runId === "string" && typeof agent === "string" && (status === "running" || status === "done" || status === "failed" || status === "lost" || status === "unknown");
+  const toolRunId = Reflect.get(value, "toolRunId");
+  return typeof runId === "string" && (toolRunId === void 0 || typeof toolRunId === "string") && typeof agent === "string" && (status === "running" || status === "done" || status === "failed" || status === "lost" || status === "unknown");
 }
 
-// src/runsRead.ts
-var READ_PRESUMED_DEAD_MS = 35e3;
-var COULD_NOT_ASK = { kind: "unknown", reason: "This machine could not be asked for the runs." };
-var RunsRead = class {
-  constructor(ask, changed, now = Date.now) {
-    this.ask = ask;
-    this.changed = changed;
-    this.now = now;
-    this.refreshFailed = false;
-    this.issued = 0;
-    this.applied = 0;
-    this.readAgain = false;
+// src/runControls.ts
+function rowControls(control, canRunCommands) {
+  if (control === "foreground") return "inside-reply";
+  return canRunCommands ? "steer-and-stop" : "needs-newer-host";
+}
+var RUN_COMMANDS = { steer: "subagents-steer", stop: "subagents-stop" };
+function noteState(note, listNow) {
+  if (note.kind === "pending") return note.command === "stop" ? "stopping" : "sending";
+  const outcome = note.outcome;
+  if (outcome.kind === "ran") {
+    if (outcome.notices.length > 0) return "said";
+    if (note.command === "steer") return "steer-sent";
+    return listNow === note.listAtAnswer ? "stop-ran" : "stop-ran-still-running";
   }
-  /** The session the panel reads, and what it has for it; undefined before this session was read. */
-  view(sessionFile) {
-    return this.sessionFile === sessionFile ? { state: this.shown, refreshFailed: this.refreshFailed } : void 0;
-  }
-  /** The session on screen. A new one starts over and reads at once; says whether it did. */
-  select(sessionFile) {
-    if (this.sessionFile === sessionFile) return false;
-    this.sessionFile = sessionFile;
-    this.shown = void 0;
-    this.refreshFailed = false;
-    this.inFlight = void 0;
-    this.readAgain = false;
-    this.read();
-    return true;
-  }
-  /**
-   * Something changed: read now, or, with a read already on its way, once more when it lands.
-   * That read may have been asked before the change, and a poll that stops on the change would
-   * otherwise keep its answer for good. There is still only ever one read in flight.
-   */
-  refresh() {
-    if (this.sessionFile === void 0) return;
-    if (this.inFlight !== void 0 && this.now() - this.inFlight.startedAt < READ_PRESUMED_DEAD_MS) {
-      this.readAgain = true;
-      return;
-    }
-    this.read();
-  }
-  /** A poll tick: read again unless a read of this session is still on its way. */
-  tick() {
-    if (this.sessionFile === void 0) return;
-    if (this.inFlight !== void 0 && this.now() - this.inFlight.startedAt < READ_PRESUMED_DEAD_MS) return;
-    this.read();
-  }
-  read() {
-    const sessionFile = this.sessionFile;
-    if (sessionFile === void 0) return;
-    const seq = ++this.issued;
-    this.inFlight = { seq, startedAt: this.now() };
-    this.ask(sessionFile).then(
-      (answer) => {
-        this.settle(sessionFile, seq, subagentListState(answer));
-      },
-      () => {
-        this.settle(sessionFile, seq, void 0);
-      }
-    );
-  }
-  settle(sessionFile, seq, answered) {
-    if (this.sessionFile !== sessionFile) return;
-    if (this.inFlight?.seq === seq) {
-      this.inFlight = void 0;
-      if (this.readAgain) {
-        this.readAgain = false;
-        this.read();
-      }
-    }
-    if (seq < this.applied) return;
-    this.applied = seq;
-    if (answered !== void 0) {
-      this.shown = answered;
-      this.refreshFailed = false;
-    } else if (this.shown?.kind === "rows" || this.shown?.kind === "empty") {
-      this.refreshFailed = true;
-    } else {
-      this.shown = COULD_NOT_ASK;
-    }
-    this.changed();
-  }
+  if (outcome.kind === "refused") return "refused";
+  if (outcome.kind === "waiting") return "waiting";
+  return "unknown";
+}
+var NOTICE_TONE = { info: "neutral", warning: "attention", error: "problem" };
+var NOTE_LINES = {
+  stopping: () => ({ text: "Stopping\u2026", tone: "neutral" }),
+  sending: () => ({ text: "Sending\u2026", tone: "neutral" }),
+  said: (note) => {
+    const notices = note.kind === "answered" && note.outcome.kind === "ran" ? note.outcome.notices : [];
+    const last = notices.at(-1);
+    return last === void 0 ? { text: "", tone: "neutral" } : { text: last.message, tone: NOTICE_TONE[last.level] ?? "neutral" };
+  },
+  "steer-sent": (_note, agent) => ({ text: `Sent to ${agent}.`, tone: "neutral" }),
+  "stop-ran": () => ({ text: "Stopping\u2026", tone: "neutral" }),
+  "stop-ran-still-running": () => ({ text: "The command ran; the run still reads running.", tone: "attention" }),
+  refused: (note) => ({ text: note.kind === "answered" && note.outcome.kind === "refused" ? note.outcome.words : "", tone: "problem" }),
+  waiting: () => ({ text: "No answer yet from the session; the list shows what happened.", tone: "attention" }),
+  unknown: () => ({ text: "No answer from the machine; the list shows what happened.", tone: "attention" })
 };
-
-// src/runsPolling.ts
-var DECISIONS = {
-  unfollowed: {
-    unknown: { read: true, poll: false },
-    idle: { read: true, poll: false },
-    working: { read: true, poll: true }
-  },
-  unknown: {
-    unknown: { read: false, poll: false },
-    idle: { read: false, poll: false },
-    working: { read: false, poll: true }
-  },
-  idle: {
-    unknown: { read: false, poll: false },
-    idle: { read: false, poll: false },
-    working: { read: true, poll: true }
-  },
-  working: {
-    unknown: { read: false, poll: true },
-    idle: { read: true, poll: false },
-    working: { read: false, poll: true }
-  }
-};
-function runsActivityOf(status) {
-  if (status === void 0) return "unknown";
-  return status.isStreaming || (status.backgroundRunCount ?? 0) > 0 ? "working" : "idle";
+function noteLine(note, listNow, agent) {
+  return NOTE_LINES[noteState(note, listNow)](note, agent);
 }
-function runsPollingDecision(previous, next) {
-  return DECISIONS[previous][next];
+function steerTaken(outcome) {
+  return outcome.kind === "ran" && !outcome.notices.some((notice) => notice.level === "error");
 }
-function followedAfter(previous, next) {
-  return next === "unknown" && previous !== "unfollowed" ? previous : next;
-}
-var UNSEEN_ANSWERS_BEFORE_STOP = 2;
-
-// src/onScreenMarker.ts
-var ON_SCREEN_MARKER_TAG = "pi-subagents-on-screen";
-var sharedObserver;
-function defineOnScreenMarker() {
-  if (typeof customElements === "undefined" || typeof HTMLElement === "undefined" || customElements.get(ON_SCREEN_MARKER_TAG) !== void 0) return;
-  class SubagentsOnScreenMarker extends HTMLElement {
-    connectedCallback() {
-      this.style.display = "block";
-      if (typeof IntersectionObserver === "undefined") return;
-      sharedObserver ??= new IntersectionObserver((entries) => {
-        for (const entry of entries) {
-          if (entry.target instanceof SubagentsOnScreenMarker) entry.target.onChange?.(entry.isIntersecting);
-        }
-      });
-      sharedObserver.observe(this);
-    }
-    disconnectedCallback() {
-      sharedObserver?.unobserve(this);
-      this.onChange?.(false);
-    }
-  }
-  customElements.define(ON_SCREEN_MARKER_TAG, SubagentsOnScreenMarker);
+function stopPending(note) {
+  return note?.kind === "pending" && note.command === "stop";
 }
 
 // node_modules/@lit/reactive-element/css-tag.js
@@ -810,6 +721,220 @@ function r5(r6) {
   return n4({ ...r6, state: true, attribute: false });
 }
 
+// src/runControlsElement.ts
+var SubagentRunControls = class extends i4 {
+  constructor() {
+    super(...arguments);
+    this.controls = "needs-newer-host";
+    this.agent = "subagent";
+    this.stopBusy = false;
+  }
+  render() {
+    const drawings = {
+      "steer-and-stop": () => this.renderSteerAndStop(),
+      "inside-reply": () => b2`<p class="note">Runs inside the current reply; it stops with the session's Stop.</p>`,
+      "needs-newer-host": () => b2`<p class="note">Steer and Stop need a newer PI WEB on this machine.</p>`
+    };
+    return drawings[this.controls]();
+  }
+  renderSteerAndStop() {
+    const ui = this.ui;
+    if (ui === void 0) return null;
+    const note = this.note;
+    return b2`
+      ${ui.renderMessageField({
+      label: `Steer ${this.agent}`,
+      placeholder: "Steer this subagent\u2026",
+      sendLabel: "Send steer",
+      send: (text) => this.onSteer?.(text) ?? Promise.resolve(false)
+    })}
+      <div class="line">
+        <p class="note ${note?.tone ?? "neutral"}" role="status">${note?.text ?? ""}</p>
+        ${ui.renderButton({ label: "Stop", tone: "danger", busy: this.stopBusy, run: () => {
+      this.onStop?.();
+    } })}
+      </div>
+    `;
+  }
+  static {
+    this.styles = i`
+    :host { display: flex; flex-direction: column; gap: var(--pi-space-3); }
+    .line { display: flex; align-items: center; gap: var(--pi-space-3); }
+    .note { flex: 1; min-width: 0; margin: 0; color: var(--pi-muted); overflow-wrap: anywhere; }
+    .note.attention { color: var(--pi-warning); }
+    .note.problem { color: var(--pi-danger); }
+  `;
+  }
+};
+__decorateClass([
+  n4({ attribute: false })
+], SubagentRunControls.prototype, "ui", 2);
+__decorateClass([
+  n4({ attribute: false })
+], SubagentRunControls.prototype, "controls", 2);
+__decorateClass([
+  n4({ attribute: false })
+], SubagentRunControls.prototype, "agent", 2);
+__decorateClass([
+  n4({ attribute: false })
+], SubagentRunControls.prototype, "note", 2);
+__decorateClass([
+  n4({ attribute: false })
+], SubagentRunControls.prototype, "stopBusy", 2);
+__decorateClass([
+  n4({ attribute: false })
+], SubagentRunControls.prototype, "onSteer", 2);
+__decorateClass([
+  n4({ attribute: false })
+], SubagentRunControls.prototype, "onStop", 2);
+function defineRunControls() {
+  void SubagentRunControls;
+}
+if (customElements.get("subagent-run-controls") === void 0) customElements.define("subagent-run-controls", SubagentRunControls);
+
+// src/runsRead.ts
+var READ_PRESUMED_DEAD_MS = 35e3;
+var COULD_NOT_ASK = { kind: "unknown", reason: "This machine could not be asked for the runs." };
+var RunsRead = class {
+  constructor(ask, changed, now = Date.now) {
+    this.ask = ask;
+    this.changed = changed;
+    this.now = now;
+    this.refreshFailed = false;
+    this.issued = 0;
+    this.applied = 0;
+    this.readAgain = false;
+  }
+  /** The session the panel reads, and what it has for it; undefined before this session was read. */
+  view(sessionFile) {
+    return this.sessionFile === sessionFile ? { state: this.shown, refreshFailed: this.refreshFailed } : void 0;
+  }
+  /** The session on screen. A new one starts over and reads at once; says whether it did. */
+  select(sessionFile) {
+    if (this.sessionFile === sessionFile) return false;
+    this.sessionFile = sessionFile;
+    this.shown = void 0;
+    this.refreshFailed = false;
+    this.inFlight = void 0;
+    this.readAgain = false;
+    this.read();
+    return true;
+  }
+  /**
+   * Something changed: read now, or, with a read already on its way, once more when it lands.
+   * That read may have been asked before the change, and a poll that stops on the change would
+   * otherwise keep its answer for good. There is still only ever one read in flight.
+   */
+  refresh() {
+    if (this.sessionFile === void 0) return;
+    if (this.inFlight !== void 0 && this.now() - this.inFlight.startedAt < READ_PRESUMED_DEAD_MS) {
+      this.readAgain = true;
+      return;
+    }
+    this.read();
+  }
+  /** A poll tick: read again unless a read of this session is still on its way. */
+  tick() {
+    if (this.sessionFile === void 0) return;
+    if (this.inFlight !== void 0 && this.now() - this.inFlight.startedAt < READ_PRESUMED_DEAD_MS) return;
+    this.read();
+  }
+  read() {
+    const sessionFile = this.sessionFile;
+    if (sessionFile === void 0) return;
+    const seq = ++this.issued;
+    this.inFlight = { seq, startedAt: this.now() };
+    this.ask(sessionFile).then(
+      (answer) => {
+        this.settle(sessionFile, seq, subagentListState(answer));
+      },
+      () => {
+        this.settle(sessionFile, seq, void 0);
+      }
+    );
+  }
+  settle(sessionFile, seq, answered) {
+    if (this.sessionFile !== sessionFile) return;
+    if (this.inFlight?.seq === seq) {
+      this.inFlight = void 0;
+      if (this.readAgain) {
+        this.readAgain = false;
+        this.read();
+      }
+    }
+    if (seq < this.applied) return;
+    this.applied = seq;
+    if (answered !== void 0) {
+      this.shown = answered;
+      this.refreshFailed = false;
+    } else if (this.shown?.kind === "rows" || this.shown?.kind === "empty") {
+      this.refreshFailed = true;
+    } else {
+      this.shown = COULD_NOT_ASK;
+    }
+    this.changed();
+  }
+};
+
+// src/runsPolling.ts
+var DECISIONS = {
+  unfollowed: {
+    unknown: { read: true, poll: false },
+    idle: { read: true, poll: false },
+    working: { read: true, poll: true }
+  },
+  unknown: {
+    unknown: { read: false, poll: false },
+    idle: { read: false, poll: false },
+    working: { read: false, poll: true }
+  },
+  idle: {
+    unknown: { read: false, poll: false },
+    idle: { read: false, poll: false },
+    working: { read: true, poll: true }
+  },
+  working: {
+    unknown: { read: false, poll: true },
+    idle: { read: true, poll: false },
+    working: { read: false, poll: true }
+  }
+};
+function runsActivityOf(status) {
+  if (status === void 0) return "unknown";
+  return status.isStreaming || (status.backgroundRunCount ?? 0) > 0 ? "working" : "idle";
+}
+function runsPollingDecision(previous, next) {
+  return DECISIONS[previous][next];
+}
+function followedAfter(previous, next) {
+  return next === "unknown" && previous !== "unfollowed" ? previous : next;
+}
+var UNSEEN_ANSWERS_BEFORE_STOP = 2;
+
+// src/onScreenMarker.ts
+var ON_SCREEN_MARKER_TAG = "pi-subagents-on-screen";
+var sharedObserver;
+function defineOnScreenMarker() {
+  if (typeof customElements === "undefined" || typeof HTMLElement === "undefined" || customElements.get(ON_SCREEN_MARKER_TAG) !== void 0) return;
+  class SubagentsOnScreenMarker extends HTMLElement {
+    connectedCallback() {
+      this.style.display = "block";
+      if (typeof IntersectionObserver === "undefined") return;
+      sharedObserver ??= new IntersectionObserver((entries) => {
+        for (const entry of entries) {
+          if (entry.target instanceof SubagentsOnScreenMarker) entry.target.onChange?.(entry.isIntersecting);
+        }
+      });
+      sharedObserver.observe(this);
+    }
+    disconnectedCallback() {
+      sharedObserver?.unobserve(this);
+      this.onChange?.(false);
+    }
+  }
+  customElements.define(ON_SCREEN_MARKER_TAG, SubagentsOnScreenMarker);
+}
+
 // src/supervisorRequest.ts
 var REASONS = {
   need_decision: "need_decision",
@@ -1024,17 +1149,25 @@ var NOTICE_TAGS = [
   "subagent_supervisor_reply",
   "subagent-compaction-resume"
 ];
-function sessionFileOf(context) {
+function selectedSessionField(context, field) {
   const state = context.state;
   if (typeof state !== "object" || state === null) return void 0;
   const selected = Reflect.get(state, "selectedSession");
   if (typeof selected !== "object" || selected === null) return void 0;
-  const path = Reflect.get(selected, "path");
-  return typeof path === "string" && path !== "" ? path : void 0;
+  const value = Reflect.get(selected, field);
+  return typeof value === "string" && value !== "" ? value : void 0;
 }
-function renderRuns(html, ui, view) {
+function sessionFileOf(context) {
+  return selectedSessionField(context, "path");
+}
+function runControlsUiOf(ui) {
+  const renderButton = ui?.renderButton;
+  const renderMessageField = ui?.renderMessageField;
+  return renderButton === void 0 || renderMessageField === void 0 ? void 0 : { renderButton, renderMessageField };
+}
+function renderRuns(html, ui, view, expansionOf) {
   if (ui?.renderList === void 0) return html`<p class="muted">This list needs a newer PI WEB on this device.</p>`;
-  return ui.renderList(subagentListModel(view?.state, view?.refreshFailed === true));
+  return ui.renderList(subagentListModel(view?.state, view?.refreshFailed === true, expansionOf));
 }
 var plugin = {
   apiVersion: 2,
@@ -1096,6 +1229,47 @@ var plugin = {
       else stopPolling();
       return sessionFile;
     };
+    const openRuns = /* @__PURE__ */ new Set();
+    const runNotes = /* @__PURE__ */ new Map();
+    const controlsUi = runControlsUiOf(context.ui);
+    const runCommand = async (panel, key, sessionFile, command, args) => {
+      const session = panel.session;
+      const sessionId = selectedSessionField(panel, "id");
+      runNotes.set(key, { kind: "pending", command });
+      panel.host.requestRender();
+      const outcome = session === void 0 || sessionId === void 0 ? { kind: "refused", reason: "no-session", words: "No session is open on this page." } : await session.runCommand({ sessionId, name: RUN_COMMANDS[command], args }).catch(() => ({ kind: "unknown", words: "" }));
+      runNotes.set(key, { kind: "answered", command, outcome, listAtAnswer: runs.view(sessionFile)?.state });
+      runs.refresh();
+      panel.host.requestRender();
+      return outcome;
+    };
+    const expansionFor = (panel, sessionFile, ui) => (row) => {
+      const key = `${panel.machine.id}
+${sessionFile}
+${row.runId}`;
+      const commandRunId = row.toolRunId ?? row.runId;
+      return {
+        expanded: openRuns.has(key),
+        onToggle: () => {
+          if (!openRuns.delete(key)) openRuns.add(key);
+          panel.host.requestRender();
+        },
+        body: () => {
+          const note = runNotes.get(key);
+          return html`<subagent-run-controls
+            .ui=${ui}
+            .controls=${rowControls(row.control, panel.session !== void 0)}
+            .agent=${row.agent}
+            .note=${note === void 0 ? void 0 : noteLine(note, runs.view(sessionFile)?.state, row.agent)}
+            .stopBusy=${stopPending(note)}
+            .onSteer=${async (text) => steerTaken(await runCommand(panel, key, sessionFile, "steer", `${commandRunId} ${text}`))}
+            .onStop=${() => {
+            void runCommand(panel, key, sessionFile, "stop", commandRunId);
+          }}
+          ></subagent-run-controls>`;
+        }
+      };
+    };
     const ensure = (panel) => {
       const sessionFile = follow(panel, panelShown !== false);
       if (sessionFile === void 0) return { state: { kind: "unknown", reason: "Open a session to see its subagents." }, refreshFailed: false };
@@ -1103,6 +1277,7 @@ var plugin = {
     };
     defineSupervisorCard();
     defineOnScreenMarker();
+    defineRunControls();
     return {
       contributions: {
         messageRenderers: [
@@ -1140,7 +1315,11 @@ var plugin = {
               const state = shownFor(panel);
               return state?.kind === "rows" && state.running > 0 ? state.running : void 0;
             },
-            render: (panel) => html`<pi-subagents-on-screen .onChange=${onScreen}></pi-subagents-on-screen>${renderRuns(html, context.ui, ensure(panel))}`
+            render: (panel) => {
+              const sessionFile = sessionFileOf(panel);
+              const expansionOf = controlsUi === void 0 || sessionFile === void 0 ? void 0 : expansionFor(panel, sessionFile, controlsUi);
+              return html`<pi-subagents-on-screen .onChange=${onScreen}></pi-subagents-on-screen>${renderRuns(html, context.ui, ensure(panel), expansionOf)}`;
+            }
           }
         ]
       },

@@ -1,4 +1,4 @@
-import type { PluginListModel, PluginListRow } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
+import type { PluginListModel, PluginListRow, PluginRowExpansion } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
 
 /**
  * What one subagent run says on a row.
@@ -21,7 +21,13 @@ export interface SubagentRunRow {
   model?: string;
   toolCount?: number;
   hasOutput: boolean;
+  /** The id the subagent tool knows the run by, which its commands take; absent when the run's records do not name it. */
+  toolRunId?: string;
+  /** For a running run: detached (`async`), inside the parent's reply (`foreground`), or not known. */
+  control: RunControl;
 }
+
+export type RunControl = "async" | "foreground" | "unknown";
 
 export type SubagentListState =
   | { kind: "unknown"; reason: string }
@@ -42,7 +48,7 @@ export function subagentListState(answer: unknown): SubagentListState {
   }
   const raw: unknown = Reflect.get(answer, "runs");
   if (!Array.isArray(raw)) return { kind: "unknown", reason: "This machine answered without a run list." };
-  const rows: SubagentRunRow[] = raw.filter(isRunRow);
+  const rows: SubagentRunRow[] = raw.filter(isRunRow).map((row) => ({ ...row, control: runControlOf(Reflect.get(row, "control")) }));
   if (rows.length === 0) return { kind: "empty" };
   return { kind: "rows", rows, running: rows.filter((row) => row.status === "running").length };
 }
@@ -70,9 +76,18 @@ const ROW_SIDE: Readonly<Record<RunPresentation["tone"], (presentation: RunPrese
   unknown: (presentation) => ({ status: { label: presentation.label, tone: "neutral" } }),
 };
 
-function listRow(row: SubagentRunRow): PluginListRow {
+/** What opens a running row; absent on a host that cannot draw one, where rows stay flat. */
+export type RunExpansionOf = (row: SubagentRunRow) => PluginRowExpansion;
+
+function listRow(row: SubagentRunRow, expansionOf?: RunExpansionOf): PluginListRow {
   const presentation = runPresentation(row);
-  return { id: row.runId, title: row.task === undefined ? row.agent : `${row.agent}: ${row.task}`, ...ROW_SIDE[presentation.tone](presentation), detail: presentation.detail };
+  return {
+    id: row.runId,
+    title: row.task === undefined ? row.agent : `${row.agent}: ${row.task}`,
+    ...ROW_SIDE[presentation.tone](presentation),
+    detail: presentation.detail,
+    ...(expansionOf === undefined ? {} : { expansion: expansionOf(row) }),
+  };
 }
 
 /** The last read said "none" and the refresh after it failed: both facts, in the one box. */
@@ -89,9 +104,10 @@ const LIST_WORDS = {
  * The page the host draws for this session's runs: running children in one
  * group, settled ones in another. A machine that could not say anything gives
  * its reason as the empty page's words; one whose latest refresh failed keeps
- * the last read under the stale line.
+ * the last read under the stale line. Running rows open when `expansionOf` is
+ * given; finished rows stay flat.
  */
-export function subagentListModel(state: SubagentListState | undefined, refreshFailed: boolean): PluginListModel {
+export function subagentListModel(state: SubagentListState | undefined, refreshFailed: boolean, expansionOf?: RunExpansionOf): PluginListModel {
   if (state === undefined) return { read: "reading", groups: [], words: LIST_WORDS };
   if (state.kind === "unknown") return { read: "failed", groups: [], words: { ...LIST_WORDS, failed: state.reason } };
   if (state.kind === "empty" && refreshFailed) return { read: "failed", groups: [], words: { ...LIST_WORDS, failed: STALE_EMPTY } };
@@ -100,8 +116,8 @@ export function subagentListModel(state: SubagentListState | undefined, refreshF
     read: refreshFailed ? "failed" : "ready",
     words: LIST_WORDS,
     groups: [
-      { id: "running", heading: "Running", rows: rows.filter((row) => row.status === "running").map(listRow) },
-      { id: "finished", heading: "Finished", rows: rows.filter((row) => row.status !== "running").map(listRow) },
+      { id: "running", heading: "Running", rows: rows.filter((row) => row.status === "running").map((row) => listRow(row, expansionOf)) },
+      { id: "finished", heading: "Finished", rows: rows.filter((row) => row.status !== "running").map((row) => listRow(row)) },
     ],
   };
 }
@@ -115,12 +131,19 @@ export function formatElapsed(milliseconds: number): string {
   return `${String(Math.floor(minutes / 60))}h ${String(minutes % 60)}m`;
 }
 
-function isRunRow(value: unknown): value is SubagentRunRow {
+/** A value this plugin does not know (a newer server half) is not known. */
+function runControlOf(value: unknown): RunControl {
+  return value === "async" || value === "foreground" ? value : "unknown";
+}
+
+function isRunRow(value: unknown): value is Omit<SubagentRunRow, "control"> {
   if (typeof value !== "object" || value === null) return false;
   const runId: unknown = Reflect.get(value, "runId");
   const agent: unknown = Reflect.get(value, "agent");
   const status: unknown = Reflect.get(value, "status");
+  const toolRunId: unknown = Reflect.get(value, "toolRunId");
   return typeof runId === "string"
+    && (toolRunId === undefined || typeof toolRunId === "string")
     && typeof agent === "string"
     && (status === "running" || status === "done" || status === "failed" || status === "lost" || status === "unknown");
 }

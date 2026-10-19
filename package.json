@@ -36,7 +36,11 @@
         "id": "subagents",
         "browserRoot": "dist/browser",
         "module": "dist/browser/pi-web-plugin.js",
-        "serverModule": "dist/server-plugin.js"
+        "serverModule": "dist/server-plugin.js",
+        "sessionCommands": [
+          "subagents-steer",
+          "subagents-stop"
+        ]
       }
     ]
   },

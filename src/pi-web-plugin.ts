@@ -1,5 +1,7 @@
-import type { HtmlTemplateTag, PiWebPlugin, PluginActivationContext, WorkspacePanelContext } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
-import { subagentListModel, type SubagentListState } from "./runRows.js";
+import type { HtmlTemplateTag, PiWebPlugin, PluginActivationContext, PluginRowExpansion, PluginSessionCommandOutcome, WorkspacePanelContext } from "@gang-of-beads/pi-web-plugin-api/plugin-api";
+import { subagentListModel, type RunExpansionOf, type SubagentListState, type SubagentRunRow } from "./runRows.js";
+import { noteLine, rowControls, RUN_COMMANDS, steerTaken, stopPending, type RunCommandName, type RunNote } from "./runControls.js";
+import { defineRunControls, type RunControlsUi } from "./runControlsElement.js";
 import { RunsRead, type RunsView } from "./runsRead.js";
 import { followedAfter, runsActivityOf, runsPollingDecision, UNSEEN_ANSWERS_BEFORE_STOP, type FollowedActivity, type RunsActivity } from "./runsPolling.js";
 import { defineOnScreenMarker } from "./onScreenMarker.js";
@@ -24,18 +26,29 @@ const NOTICE_TAGS = [
  * fetched for one conversation must never render under another (the scope rule
  * the host surfaces follow).
  */
-function sessionFileOf(context: WorkspacePanelContext): string | undefined {
+function selectedSessionField(context: WorkspacePanelContext, field: "path" | "id"): string | undefined {
   const state: unknown = context.state;
   if (typeof state !== "object" || state === null) return undefined;
   const selected: unknown = Reflect.get(state, "selectedSession");
   if (typeof selected !== "object" || selected === null) return undefined;
-  const path: unknown = Reflect.get(selected, "path");
-  return typeof path === "string" && path !== "" ? path : undefined;
+  const value: unknown = Reflect.get(selected, field);
+  return typeof value === "string" && value !== "" ? value : undefined;
 }
 
-function renderRuns(html: HtmlTemplateTag, ui: PluginActivationContext["ui"], view: RunsView | undefined) {
+function sessionFileOf(context: WorkspacePanelContext): string | undefined {
+  return selectedSessionField(context, "path");
+}
+
+/** The host components an open row needs, when this host has all of them. */
+function runControlsUiOf(ui: PluginActivationContext["ui"]): RunControlsUi | undefined {
+  const renderButton = ui?.renderButton;
+  const renderMessageField = ui?.renderMessageField;
+  return renderButton === undefined || renderMessageField === undefined ? undefined : { renderButton, renderMessageField };
+}
+
+function renderRuns(html: HtmlTemplateTag, ui: PluginActivationContext["ui"], view: RunsView | undefined, expansionOf: RunExpansionOf | undefined) {
   if (ui?.renderList === undefined) return html`<p class="muted">This list needs a newer PI WEB on this device.</p>`;
-  return ui.renderList(subagentListModel(view?.state, view?.refreshFailed === true));
+  return ui.renderList(subagentListModel(view?.state, view?.refreshFailed === true, expansionOf));
 }
 
 const plugin: PiWebPlugin = {
@@ -108,6 +121,53 @@ const plugin: PiWebPlugin = {
       return sessionFile;
     };
 
+    /**
+     * Open rows and command notes, per device, keyed by machine, session and run: a
+     * session switch shows the other session's rows closed, and a note never
+     * lands on another session's run.
+     */
+    const openRuns = new Set<string>();
+    const runNotes = new Map<string, RunNote>();
+    const controlsUi = runControlsUiOf(context.ui);
+
+    const runCommand = async (panel: WorkspacePanelContext, key: string, sessionFile: string, command: RunCommandName, args: string): Promise<PluginSessionCommandOutcome> => {
+      const session = panel.session;
+      const sessionId = selectedSessionField(panel, "id");
+      runNotes.set(key, { kind: "pending", command });
+      panel.host.requestRender();
+      const outcome: PluginSessionCommandOutcome = session === undefined || sessionId === undefined
+        ? { kind: "refused", reason: "no-session", words: "No session is open on this page." }
+        : await session.runCommand({ sessionId, name: RUN_COMMANDS[command], args }).catch((): PluginSessionCommandOutcome => ({ kind: "unknown", words: "" }));
+      runNotes.set(key, { kind: "answered", command, outcome, listAtAnswer: runs.view(sessionFile)?.state });
+      runs.refresh();
+      panel.host.requestRender();
+      return outcome;
+    };
+
+    const expansionFor = (panel: WorkspacePanelContext, sessionFile: string, ui: RunControlsUi) => (row: SubagentRunRow): PluginRowExpansion => {
+      const key = `${panel.machine.id}\n${sessionFile}\n${row.runId}`;
+      const commandRunId = row.toolRunId ?? row.runId;
+      return {
+        expanded: openRuns.has(key),
+        onToggle: () => {
+          if (!openRuns.delete(key)) openRuns.add(key);
+          panel.host.requestRender();
+        },
+        body: () => {
+          const note = runNotes.get(key);
+          return html`<subagent-run-controls
+            .ui=${ui}
+            .controls=${rowControls(row.control, panel.session !== undefined)}
+            .agent=${row.agent}
+            .note=${note === undefined ? undefined : noteLine(note, runs.view(sessionFile)?.state, row.agent)}
+            .stopBusy=${stopPending(note)}
+            .onSteer=${async (text: string) => steerTaken(await runCommand(panel, key, sessionFile, "steer", `${commandRunId} ${text}`))}
+            .onStop=${() => { void runCommand(panel, key, sessionFile, "stop", commandRunId); }}
+          ></subagent-run-controls>`;
+        },
+      };
+    };
+
     const ensure = (panel: WorkspacePanelContext): RunsView | undefined => {
       const sessionFile = follow(panel, panelShown !== false);
       if (sessionFile === undefined) return { state: { kind: "unknown", reason: "Open a session to see its subagents." }, refreshFailed: false };
@@ -116,6 +176,7 @@ const plugin: PiWebPlugin = {
 
     defineSupervisorCard();
     defineOnScreenMarker();
+    defineRunControls();
     return {
       contributions: {
         messageRenderers: [
@@ -153,7 +214,11 @@ const plugin: PiWebPlugin = {
               const state = shownFor(panel);
               return state?.kind === "rows" && state.running > 0 ? state.running : undefined;
             },
-            render: (panel) => html`<pi-subagents-on-screen .onChange=${onScreen}></pi-subagents-on-screen>${renderRuns(html, context.ui, ensure(panel))}`,
+            render: (panel) => {
+              const sessionFile = sessionFileOf(panel);
+              const expansionOf = controlsUi === undefined || sessionFile === undefined ? undefined : expansionFor(panel, sessionFile, controlsUi);
+              return html`<pi-subagents-on-screen .onChange=${onScreen}></pi-subagents-on-screen>${renderRuns(html, context.ui, ensure(panel), expansionOf)}`;
+            },
           },
         ],
       },
