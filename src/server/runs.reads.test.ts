@@ -15,6 +15,8 @@ vi.mock("node:fs/promises", async (importOriginal) => {
 
 const { readFile, readdir } = await import("node:fs/promises");
 const { listSubagentRuns, readSubagentRunOutput } = await import("./runs.js");
+const { default: serverPlugin } = await import("../server-plugin.js");
+const { operations } = await serverPlugin.activate({} as Parameters<typeof serverPlugin.activate>[0]);
 
 const PARENT = "2026-08-20T17-27-53-830Z_01a02037-0ce6-730d-95f5-625c398ae884";
 /** Larger than every window the module reads, so a whole-file read is visible. */
@@ -41,7 +43,7 @@ async function writeLongTranscript(dir: string, runId: string): Promise<void> {
   const lines = [
     JSON.stringify({ type: "session_info", name: `subagent-scout-${runId}-0` }),
     JSON.stringify({ message: { role: "assistant", content: [{ type: "text", text: FILLER }] } }),
-    JSON.stringify({ message: { role: "assistant", content: [{ toolName: "read" }] } }),
+    JSON.stringify({ message: { role: "assistant", content: [{ type: "toolCall", name: "read" }] } }),
   ];
   await writeFile(join(path, "session.jsonl"), lines.join("\n"), "utf8");
 }
@@ -83,13 +85,24 @@ describe("what the activity listing pulls off disk", () => {
     await writeLongTranscript(dir, DONE_RUN);
     const artifacts = join(dir, "subagent-artifacts");
     await mkdir(artifacts, { recursive: true });
-    await writeFile(join(artifacts, `${DONE_RUN}_scout_0_meta.json`), JSON.stringify({ agent: "scout", exitCode: 0, task: "[prompt redacted]" }), "utf8");
+    await writeFile(join(artifacts, `${DONE_RUN}_scout_0_meta.json`), JSON.stringify({ agent: "scout", exitCode: 0, task: "[prompt redacted]", usage: { cacheRead: 3, cacheWrite: 4 } }), "utf8");
     await writeFile(join(artifacts, `${DONE_RUN}_scout_0_output.md`), `# What I found\n\n${FILLER}`, "utf8");
 
     const [run] = await listSubagentRuns(dir, PARENT);
 
     expect(run).toMatchObject({ status: "done", task: "What I found" });
     expect(wholeFileReads()).toEqual([]);
+
+    // Opening the row: no message count unless asked, cached tokens are read plus written,
+    // and a run id that could leave the directory is refused before anything is read.
+    const sessionFile = join(dir, `${PARENT}.jsonl`);
+    const context = { signal: new AbortController().signal };
+    const detail = await operations?.["runs.detail"]?.({ sessionFile, runId: DONE_RUN, countMessages: false }, context);
+    expect(detail).toMatchObject({ known: true, facts: { tokensCached: 7 } });
+    expect(detail).not.toHaveProperty("messages");
+    for (const name of ["runs.detail", "runs.conversation"]) {
+      expect(await operations?.[name]?.({ sessionFile, runId: "../x" }, context)).toEqual({ known: false, reason: "no-run" });
+    }
   });
 
   /**
@@ -128,7 +141,7 @@ describe("what the activity listing pulls off disk", () => {
     // file carries no step at all.
     const lines = [
       JSON.stringify({ type: "session_info", name: `subagent-scout-${LIVE_RUN}-0` }),
-      JSON.stringify({ message: { role: "assistant", content: [{ toolName: "out_of_window" }] } }),
+      JSON.stringify({ message: { role: "assistant", content: [{ type: "toolCall", name: "out_of_window" }] } }),
       JSON.stringify({ note: "z".repeat(100_000) }),
     ];
     await writeFile(join(path, "session.jsonl"), lines.join("\n"), "utf8");

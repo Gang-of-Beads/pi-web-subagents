@@ -133,7 +133,7 @@ describe("listSubagentRuns", () => {
     const dir = await sessionDir();
     await writeTranscript(dir, "run-c", [
       { role: "assistant", content: [{ type: "text", text: "thinking" }] },
-      { role: "assistant", content: [{ type: "tool_call", toolName: "bash" }] },
+      { role: "assistant", content: [{ type: "toolCall", name: "bash" }] },
     ]);
 
     const [run] = await listSubagentRuns(dir, PARENT);
@@ -149,7 +149,7 @@ describe("listSubagentRuns", () => {
     const dir = await sessionDir();
     await writeTranscript(dir, "run-live", [
       { type: "message", message: { role: "assistant", content: [{ type: "text", text: "reading the config" }] } },
-      { type: "message", message: { role: "assistant", content: [{ type: "tool_call", toolName: "grep" }] } },
+      { type: "message", message: { role: "assistant", content: [{ type: "toolCall", name: "grep" }] } },
     ]);
 
     const [run] = await listSubagentRuns(dir, PARENT);
@@ -233,8 +233,8 @@ describe("listSubagentRuns", () => {
 
   it("reads the latest attempt of a retried run", async () => {
     const dir = await sessionDir();
-    await writeTranscript(dir, "run-e", [{ role: "assistant", content: [{ type: "tool_call", toolName: "first-attempt" }] }], "run-0");
-    await writeTranscript(dir, "run-e", [{ role: "assistant", content: [{ type: "tool_call", toolName: "second-attempt" }] }], "run-1");
+    await writeTranscript(dir, "run-e", [{ role: "assistant", content: [{ type: "toolCall", name: "first-attempt" }] }], "run-0");
+    await writeTranscript(dir, "run-e", [{ role: "assistant", content: [{ type: "toolCall", name: "second-attempt" }] }], "run-1");
 
     const [run] = await listSubagentRuns(dir, PARENT);
 
@@ -247,7 +247,7 @@ describe("listSubagentRuns", () => {
     await writeArtifact(dir, "old-done", "scout", { exitCode: 0, durationMs: 1, timestamp: "2026-08-21T09:00:00.000Z" });
     await writeTranscript(dir, "new-done", [{ role: "assistant", content: [{ type: "text", text: "x" }] }]);
     await writeArtifact(dir, "new-done", "scout", { exitCode: 0, durationMs: 1, timestamp: "2026-08-21T11:00:00.000Z" });
-    await writeTranscript(dir, "live", [{ role: "assistant", content: [{ type: "tool_call", toolName: "read" }] }]);
+    await writeTranscript(dir, "live", [{ role: "assistant", content: [{ type: "toolCall", name: "read" }] }]);
 
     const runs = await listSubagentRuns(dir, PARENT);
 
@@ -266,7 +266,7 @@ describe("listSubagentRuns", () => {
     const dir = await sessionDir();
     const path = join(dir, PARENT, "run-f", "run-0");
     await mkdir(path, { recursive: true });
-    await writeFile(join(path, "session.jsonl"), `${JSON.stringify({ role: "assistant", content: [{ type: "tool_call", toolName: "grep" }] })}\n{"role":"assist`, "utf8");
+    await writeFile(join(path, "session.jsonl"), `${JSON.stringify({ role: "assistant", content: [{ type: "toolCall", name: "grep" }] })}\n{"role":"assist`, "utf8");
 
     const [run] = await listSubagentRuns(dir, PARENT);
 
@@ -732,7 +732,7 @@ describe("subagent runs are found where the tool writes them", () => {
     await writeFile(sessionFile, "", "utf8");
     const runDir = join(dir, "2026-08-20T17-27-53-830Z_01a02037-0ce6-730d-95f5-625c398ae884", "run-abc", "run-0");
     await mkdir(runDir, { recursive: true });
-    await writeFile(join(runDir, "session.jsonl"), JSON.stringify({ role: "assistant", content: [{ type: "tool_call", toolName: "grep" }] }), "utf8");
+    await writeFile(join(runDir, "session.jsonl"), JSON.stringify({ role: "assistant", content: [{ type: "toolCall", name: "grep" }] }), "utf8");
 
     const runs = await listSubagentRuns(dirname(sessionFile), basename(sessionFile, ".jsonl"));
 

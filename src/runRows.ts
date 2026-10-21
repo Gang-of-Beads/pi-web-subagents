@@ -19,6 +19,8 @@ export interface SubagentRunRow {
   elapsedMs: number;
   startedAt: string;
   lastActivity?: string;
+  /** When the child wrote `lastActivity` (ISO); absent when its record carried no time. */
+  lastActivityAt?: string;
   task?: string;
   model?: string;
   toolCount?: number;
@@ -85,7 +87,7 @@ const ROW_SIDE: Readonly<Record<RunPresentation["tone"], (presentation: RunPrese
   unknown: (presentation) => ({ status: { label: presentation.label, tone: "neutral" } }),
 };
 
-/** What opens a running row; absent on a host that cannot draw one, where rows stay flat. */
+/** What opens a row; absent on a host that cannot draw one, where rows stay flat. */
 export type RunExpansionOf = (row: SubagentRunRow) => PluginRowExpansion;
 
 function listRow(row: SubagentRunRow, now: number, expansionOf?: RunExpansionOf): PluginListRow {
@@ -113,9 +115,8 @@ const LIST_WORDS = {
  * The page the host draws for this session's runs: running children in one
  * group, settled ones in another. A machine that could not say anything gives
  * its reason as the empty page's words; one whose latest refresh failed keeps
- * the last read under the stale line. Running rows open when `expansionOf` is
- * given; finished rows stay flat. `now` is this page's clock, which running
- * rows count from.
+ * the last read under the stale line. Every row opens when `expansionOf` is
+ * given. `now` is this page's clock, which running rows count from.
  */
 export function subagentListModel(state: SubagentListState | undefined, refreshFailed: boolean, expansionOf?: RunExpansionOf, now = Date.now()): PluginListModel {
   if (state === undefined) return { read: "reading", groups: [], words: LIST_WORDS };
@@ -127,7 +128,7 @@ export function subagentListModel(state: SubagentListState | undefined, refreshF
     words: LIST_WORDS,
     groups: [
       { id: "running", heading: "Running", rows: rows.filter((row) => row.status === "running").map((row) => listRow(row, now, expansionOf)) },
-      { id: "finished", heading: "Finished", rows: rows.filter((row) => row.status !== "running").map((row) => listRow(row, now)) },
+      { id: "finished", heading: "Finished", rows: rows.filter((row) => row.status !== "running").map((row) => listRow(row, now, expansionOf)) },
     ],
   };
 }
@@ -153,7 +154,9 @@ function isRunRow(value: unknown): value is Omit<SubagentRunRow, "control"> {
   const status: unknown = Reflect.get(value, "status");
   const toolRunId: unknown = Reflect.get(value, "toolRunId");
   const error: unknown = Reflect.get(value, "error");
+  const lastActivityAt: unknown = Reflect.get(value, "lastActivityAt");
   return typeof runId === "string"
+    && (lastActivityAt === undefined || typeof lastActivityAt === "string")
     && (toolRunId === undefined || typeof toolRunId === "string")
     && (error === undefined || typeof error === "string")
     && typeof agent === "string"

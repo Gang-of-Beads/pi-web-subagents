@@ -2,6 +2,9 @@ import type { HtmlTemplateTag, PiWebPlugin, PluginActivationContext, PluginRowEx
 import { subagentListModel, type RunExpansionOf, type SubagentListState, type SubagentRunRow } from "./runRows.js";
 import { noteLine, rowControls, RUN_COMMANDS, steerTaken, stopPending, type RunCommandName, type RunNote } from "./runControls.js";
 import { defineRunControls, type RunControlsUi } from "./runControlsElement.js";
+import { defineRunDetail, type ConversationButton, type RunDetailUi } from "./runDetailElement.js";
+import { defineConversation, type ConversationUi } from "./conversationElement.js";
+import { conversationViewOf, detailViewOf, type ConversationView, type DetailView } from "./runDetail.js";
 import { RunsRead, type RunsView } from "./runsRead.js";
 import { followedAfter, runsActivityOf, runsPollingDecision, UNSEEN_ANSWERS_BEFORE_STOP, type FollowedActivity, type RunsActivity } from "./runsPolling.js";
 import { defineOnScreenMarker } from "./onScreenMarker.js";
@@ -46,6 +49,33 @@ function runControlsUiOf(ui: PluginActivationContext["ui"]): RunControlsUi | und
   return renderButton === undefined || renderMessageField === undefined ? undefined : { renderButton, renderMessageField };
 }
 
+/** What an opened row draws with, on a host that opens rows at all. */
+function runDetailUiOf(ui: PluginActivationContext["ui"], renderButton: RunControlsUi["renderButton"]): RunDetailUi {
+  return {
+    renderButton,
+    renderMarkdownHtml: typeof ui?.renderMarkdownHtml === "function" ? ui.renderMarkdownHtml : undefined,
+    textStyles: ui?.textStyles,
+    adoptSheets: ui?.adoptSheets,
+    desktopQuery: ui?.breakpoints?.desktopSideBySide,
+    chevron: ui?.renderDisclosureIcon?.(true),
+  };
+}
+
+/** What the Conversation dialog draws with; without a dialog or markdown there is no Conversation row. */
+function conversationUiOf(ui: PluginActivationContext["ui"]): ConversationUi | undefined {
+  if (typeof ui?.showDialog !== "function" || typeof ui.renderMarkdownHtml !== "function") return undefined;
+  return { renderMarkdownHtml: ui.renderMarkdownHtml, textStyles: ui.textStyles, adoptSheets: ui.adoptSheets };
+}
+
+const READING: DetailView = { kind: "reading" };
+const READ_FAILED: { readonly kind: "failed" } = { kind: "failed" };
+
+/** One opened row's detail read and the run status it was read under; another status reads again. */
+interface DetailEntry {
+  readonly status: SubagentRunRow["status"];
+  readonly view: DetailView;
+}
+
 function renderRuns(html: HtmlTemplateTag, ui: PluginActivationContext["ui"], view: RunsView | undefined, expansionOf: RunExpansionOf | undefined) {
   if (ui?.renderList === undefined) return html`<p class="muted">This list needs a newer PI WEB on this device.</p>`;
   return ui.renderList(subagentListModel(view?.state, view?.refreshFailed === true, expansionOf, Date.now()));
@@ -66,6 +96,19 @@ const plugin: PiWebPlugin = {
     let followed: { readonly sessionFile: string; readonly activity: RunsActivity } | undefined;
     let unseenAnswers = 0;
     let panelShown: boolean | undefined;
+    /** `machine\nsessionFile` of the session the host last asked this plugin about: an answer for another is not shown. */
+    let selectedSession: string | undefined;
+    const failedRead = (error: unknown): { readonly kind: "failed"; readonly words?: string } => {
+      const words = context.ui?.describeError(error);
+      return words === undefined ? READ_FAILED : { kind: "failed", words };
+    };
+    /**
+     * The one read path for the opened row and its Conversation: a page without operations
+     * answers the plain failed view, and only the operation's own rejection gets the host's words.
+     */
+    const readView = <View>(operation: string, input: unknown, viewOf: (answer: unknown) => View): Promise<View | ReturnType<typeof failedRead>> => (callOperation === undefined
+      ? Promise.resolve(READ_FAILED)
+      : callOperation(operation, input).then(viewOf, failedRead));
     const runs = new RunsRead(
       (sessionFile) => (callOperation === undefined ? Promise.reject(new Error("no operations")) : callOperation("runs.list", { sessionFile })),
       () => {
@@ -120,6 +163,7 @@ const plugin: PiWebPlugin = {
      */
     const follow = (panel: WorkspacePanelContext, looking = true): string | undefined => {
       const sessionFile = sessionFileOf(panel);
+      selectedSession = sessionFile === undefined ? undefined : `${panel.machine.id}\n${sessionFile}`;
       if (sessionFile === undefined) return undefined;
       requestUpdate = () => { panel.host.requestRender(); };
       if (!looking) return sessionFile;
@@ -143,6 +187,59 @@ const plugin: PiWebPlugin = {
     const openRuns = new Set<string>();
     const runNotes = new Map<string, RunNote>();
     const controlsUi = runControlsUiOf(context.ui);
+    const detailUi = controlsUi === undefined ? undefined : runDetailUiOf(context.ui, controlsUi.renderButton);
+    const conversationUi = conversationUiOf(context.ui);
+    /**
+     * What each opened row read about its run, by the same key as `openRuns`: read when the row
+     * opens, kept when it closes, read again when the run's status changes (a running run that
+     * finishes gets its result). One read in flight per key; a reload forgets them all.
+     */
+    const details = new Map<string, DetailEntry>();
+    const conversationsReading = new Set<string>();
+    const conversationFailures = new Map<string, string>();
+
+    const readDetail = (panel: WorkspacePanelContext, key: string, sessionFile: string, row: SubagentRunRow): void => {
+      const reading: DetailEntry = { status: row.status, view: READING };
+      details.set(key, reading);
+      void readView("runs.detail", { sessionFile, runId: row.runId, countMessages: conversationUi !== undefined }, detailViewOf).then((view) => {
+        if (details.get(key) !== reading) return;
+        details.set(key, { status: row.status, view });
+        panel.host.requestRender();
+      });
+    };
+
+    /** Reads the run's conversation and shows it, unless the reader has left that session by the time it answers. */
+    const openConversation = (panel: WorkspacePanelContext, key: string, sessionFile: string, row: SubagentRunRow, ui: ConversationUi): void => {
+      const hostUi = context.ui;
+      if (hostUi === undefined) return;
+      const read = (): Promise<ConversationView> => readView("runs.conversation", { sessionFile, runId: row.runId }, conversationViewOf);
+      const openDialog = (view: ConversationView): void => {
+        try {
+          const dialog = hostUi.showDialog({
+            label: `${row.agent} conversation`,
+            presentation: "fullscreen",
+            content: html`<subagent-conversation
+              .ui=${ui}
+              .agent=${row.agent}
+              .view=${view}
+              .refresh=${row.status === "running" ? read : undefined}
+              .close=${() => { dialog.close(); }}
+            ></subagent-conversation>`,
+          });
+        } catch (error) {
+          conversationFailures.set(key, `Could not open it. ${hostUi.describeError(error)}`);
+        }
+      };
+      const askedFor = `${panel.machine.id}\n${sessionFile}`;
+      conversationsReading.add(key);
+      conversationFailures.delete(key);
+      panel.host.requestRender();
+      void read().then((view) => {
+        conversationsReading.delete(key);
+        if (selectedSession === askedFor) openDialog(view);
+        panel.host.requestRender();
+      });
+    };
 
     const runCommand = async (panel: WorkspacePanelContext, key: string, sessionFile: string, command: RunCommandName, args: string): Promise<PluginSessionCommandOutcome> => {
       const session = panel.session;
@@ -158,7 +255,7 @@ const plugin: PiWebPlugin = {
       return outcome;
     };
 
-    const expansionFor = (panel: WorkspacePanelContext, sessionFile: string, ui: RunControlsUi) => (row: SubagentRunRow): PluginRowExpansion => {
+    const expansionFor = (panel: WorkspacePanelContext, sessionFile: string, ui: RunControlsUi, rowUi: RunDetailUi) => (row: SubagentRunRow): PluginRowExpansion => {
       const key = `${panel.machine.id}\n${sessionFile}\n${row.runId}`;
       const commandRunId = row.toolRunId ?? row.runId;
       return {
@@ -169,7 +266,23 @@ const plugin: PiWebPlugin = {
         },
         body: () => {
           const note = runNotes.get(key);
-          return html`<subagent-run-controls
+          const entry = details.get(key);
+          if (entry === undefined || entry.status !== row.status) readDetail(panel, key, sessionFile, row);
+          const conversation: ConversationButton | undefined = conversationUi === undefined ? undefined : {
+            busy: conversationsReading.has(key),
+            failed: conversationFailures.get(key),
+            open: () => { if (!conversationsReading.has(key)) openConversation(panel, key, sessionFile, row, conversationUi); },
+          };
+          const running = row.status === "running";
+          return html`<subagent-run-detail
+            .ui=${rowUi}
+            .row=${row}
+            .read=${details.get(key)?.view ?? READING}
+            .stoppedHere=${note?.command === "stop" && !(note.kind === "answered" && note.outcome.kind === "refused")}
+            .now=${running ? Date.now() : 0}
+            .conversation=${conversation}
+            .onReadAgain=${() => { readDetail(panel, key, sessionFile, row); panel.host.requestRender(); }}
+          >${running ? html`<subagent-run-controls
             .ui=${ui}
             .controls=${rowControls(row.control, panel.session !== undefined)}
             .agent=${row.agent}
@@ -177,7 +290,7 @@ const plugin: PiWebPlugin = {
             .stopBusy=${stopPending(note)}
             .onSteer=${async (text: string) => steerTaken(await runCommand(panel, key, sessionFile, "steer", `${commandRunId} ${text}`))}
             .onStop=${() => { void runCommand(panel, key, sessionFile, "stop", commandRunId); }}
-          ></subagent-run-controls>`;
+          ></subagent-run-controls>` : null}</subagent-run-detail>`;
         },
       };
     };
@@ -191,6 +304,8 @@ const plugin: PiWebPlugin = {
     defineSupervisorCard();
     defineOnScreenMarker();
     defineRunControls();
+    defineRunDetail();
+    defineConversation();
     return {
       contributions: {
         messageRenderers: [
@@ -230,7 +345,7 @@ const plugin: PiWebPlugin = {
             },
             render: (panel) => {
               const sessionFile = sessionFileOf(panel);
-              const expansionOf = controlsUi === undefined || sessionFile === undefined ? undefined : expansionFor(panel, sessionFile, controlsUi);
+              const expansionOf = controlsUi === undefined || detailUi === undefined || sessionFile === undefined ? undefined : expansionFor(panel, sessionFile, controlsUi, detailUi);
               const view = ensure(panel);
               keepElapsedMoving(view?.state?.kind === "rows" && view.state.running > 0);
               return html`<pi-subagents-on-screen .onChange=${onScreen}></pi-subagents-on-screen>${renderRuns(html, context.ui, view, expansionOf)}`;

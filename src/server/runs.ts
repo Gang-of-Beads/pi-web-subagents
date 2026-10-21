@@ -18,8 +18,10 @@ export interface SubagentRunInfo {
   /** Wall-clock milliseconds: reported when finished, elapsed while running. */
   readonly elapsedMs: number;
   readonly startedAt: string;
-  /** The child's most recent step, so "running" can say what it is running. */
+  /** The child's most recent step, so "running" can say what it is running (and "lost" what it did last). */
   readonly lastActivity?: string;
+  /** When the child wrote that step (ISO), so the row can say how long ago. */
+  readonly lastActivityAt?: string;
   readonly task?: string;
   readonly model?: string;
   readonly toolCount?: number;
@@ -33,6 +35,14 @@ export interface SubagentRunInfo {
   readonly toolRunId?: string;
   /** For a running run: whether the tool runs it detached (`async`) or inside the parent's reply (`foreground`), or `unknown` when its transcript does not say. */
   readonly control?: RunControl;
+  /**
+   * Server-only: where this run's artifacts live, as the listing resolved them from directory
+   * entries (`<artifacts>/<runId>_<agent>[_n]`, before `_meta.json`, `_output.md`,
+   * `_transcript.jsonl`). The detail reads open files by these paths, never by joining input.
+   */
+  readonly artifactPrefix?: string;
+  /** Server-only: the run directory's live `session.jsonl`, when it has one. */
+  readonly transcriptPath?: string;
 }
 
 /** How a running run is held: its own transcript says, and `unknown` when nothing on disk does. */
@@ -124,7 +134,7 @@ const OUTPUT_HEAD_BYTES = 8 * 1024;
  * four-second poll, and the activity list fell so far behind that it looked
  * frozen until the reader reloaded the page.
  */
-async function readWindow(path: string, bytes: number, edge: "head" | "tail"): Promise<string | undefined> {
+export async function readWindow(path: string, bytes: number, edge: "head" | "tail"): Promise<string | undefined> {
   let handle;
   try {
     handle = await open(path, "r");
@@ -143,6 +153,8 @@ async function readWindow(path: string, bytes: number, edge: "head" | "tail"): P
 }
 
 interface RunArtifact {
+  /** `<artifacts>/<runId>_<agent>[_n]`, the name the run's files share. */
+  prefix: string;
   agent?: string;
   task?: string;
   outputSummary?: string;
@@ -585,10 +597,14 @@ async function describeRun(runsDir: string, runId: string, artifacts: Map<string
   const label = artifact?.task ?? artifact?.outputSummary;
   const elapsedMs = artifact?.durationMs ?? outcome?.durationMs ?? Math.max(0, (lastWriteMs ?? now) - Date.parse(startedAt));
   const error = status === "failed" ? artifact?.error : undefined;
-  const lastActivity = status === "running" && transcript !== undefined ? await lastTranscriptStep(transcript) : undefined;
   // A run reached through its live artifact is already named by the tool's id.
   const toolRunId = linkedRunId ?? (running === undefined ? undefined : runId);
-  const control = status === "running" ? await runControl(toolRunId === undefined ? undefined : runningByRunId.get(toolRunId)) : undefined;
+  const toolLiveArtifact = toolRunId === undefined ? undefined : runningByRunId.get(toolRunId);
+  const liveArtifact = toolLiveArtifact ?? running;
+  const stepPath = liveArtifact?.transcriptPath ?? transcript;
+  const step = (status === "running" || status === "lost") && stepPath !== undefined ? await latestStep(stepPath, status === "running") : undefined;
+  const control = status === "running" ? await runControl(toolLiveArtifact) : undefined;
+  const artifactPrefix = artifact?.prefix ?? (liveArtifact === undefined ? undefined : liveArtifact.transcriptPath.slice(0, -TRANSCRIPT_SUFFIX.length));
   return {
     runId: artifactRunId,
     agent,
@@ -596,15 +612,20 @@ async function describeRun(runsDir: string, runId: string, artifacts: Map<string
     ...(error === undefined ? {} : { error }),
     elapsedMs,
     startedAt,
-    ...(lastActivity === undefined ? {} : { lastActivity }),
+    ...(step === undefined ? {} : { lastActivity: step.text }),
+    ...(step?.at === undefined ? {} : { lastActivityAt: step.at }),
     ...(label === undefined ? {} : { task: label }),
     ...(artifact?.model === undefined ? {} : { model: artifact.model }),
     ...(artifact?.toolCount === undefined ? {} : { toolCount: artifact.toolCount }),
     hasOutput: artifact?.hasOutput === true,
     ...(toolRunId === undefined ? {} : { toolRunId }),
     ...(control === undefined ? {} : { control }),
+    ...(artifactPrefix === undefined ? {} : { artifactPrefix }),
+    ...(transcript === undefined ? {} : { transcriptPath: transcript }),
   };
 }
+
+const TRANSCRIPT_SUFFIX = "_transcript.jsonl";
 
 /**
  * Whether a running run is detached or part of the parent's reply, from the
@@ -717,14 +738,49 @@ async function findTranscript(runDir: string): Promise<string | undefined> {
   return (await statOrUndefined(path)) === undefined ? undefined : path;
 }
 
+/** One step a child took: what it did, and when the record says it did it (ISO). */
+export interface RunStep {
+  readonly text: string;
+  readonly at?: string;
+}
+
+/** How long a step reads on its row and in the opened row. */
+const STEP_CHARS = 200;
+
 /**
- * The child's most recent step, in the words the child used: a tool name if it
- * is calling one, otherwise the start of what it is saying. Only the tail is
- * read - these transcripts reach megabytes and this runs on every poll.
+ * The last step read from each transcript, by the file's size and mtime. The list polls every
+ * few seconds while a child works; an unchanged file costs a stat, a changed one a tail read.
+ * A tail with no complete step in it (one huge tool result) keeps the step read before, with
+ * its own time, so the row ages honestly instead of going blank. At most `STEP_CACHE_ENTRIES`
+ * transcripts are remembered; the one used longest ago is forgotten first.
  */
-async function lastTranscriptStep(transcript: string): Promise<string | undefined> {
+const stepCache = new Map<string, { size: number; mtimeMs: number; step: RunStep | undefined }>();
+const STEP_CACHE_ENTRIES = 2048;
+
+function rememberStep(transcript: string, entry: { size: number; mtimeMs: number; step: RunStep | undefined }): void {
+  stepCache.delete(transcript);
+  stepCache.set(transcript, entry);
+  const oldest = stepCache.keys().next();
+  if (stepCache.size > STEP_CACHE_ENTRIES && oldest.done !== true) stepCache.delete(oldest.value);
+}
+
+/**
+ * The child's most recent step, in the words the child used: the tool it
+ * started with its arguments, otherwise the start of what it said. Only the
+ * tail is read - these transcripts reach megabytes and this runs on every poll.
+ * Only a `live` (running) run is checked for a newer step; a lost run went
+ * silent, so the step remembered for it is answered without a stat.
+ */
+async function latestStep(transcript: string, live: boolean): Promise<RunStep | undefined> {
+  const cached = stepCache.get(transcript);
+  if (cached !== undefined) rememberStep(transcript, cached);
+  if (!live && cached !== undefined) return cached.step;
+  const stats = await statOrUndefined(transcript);
+  if (stats === undefined) return undefined;
+  if (cached !== undefined && cached.size === stats.size && cached.mtimeMs === stats.mtimeMs) return cached.step;
   const text = await readWindow(transcript, TAIL_BYTES, "tail");
-  if (text === undefined) return undefined;
+  if (text === undefined) return cached?.step;
+  let step: RunStep | undefined;
   const lines = text.split("\n").filter((line) => line.trim() !== "");
   for (const line of lines.reverse()) {
     let parsed: unknown;
@@ -733,46 +789,84 @@ async function lastTranscriptStep(transcript: string): Promise<string | undefine
     } catch {
       continue; // a truncated first line from slicing, or a partial write
     }
-    const step = stepFromEntry(parsed);
-    if (step !== undefined) return step;
+    step = stepOf(parsed);
+    if (step !== undefined) break;
   }
-  return undefined;
+  step ??= cached?.step;
+  rememberStep(transcript, { size: stats.size, mtimeMs: stats.mtimeMs, step });
+  return step;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
+export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function stepFromEntry(entry: unknown): string | undefined {
+/**
+ * The step one transcript record is, if it is one: a tool start (`tool_start`, which the
+ * artifact transcript writes with `toolName` and `argsPreview`) or an assistant message's
+ * last tool call (`{type:"toolCall", name, arguments}`) or text. The user's words, the
+ * system prompt and tool results are not steps: counting them made the task ("Task: …")
+ * and the first line of a tool's output read as what the child was doing.
+ *
+ * A Pi transcript line wraps the model message (`{"type":"message","message":{…}}`); the
+ * flat shape is still accepted so a caller holding a message can pass it directly.
+ */
+function stepOf(entry: unknown): RunStep | undefined {
   if (!isRecord(entry)) return undefined;
-  // A transcript line wraps the model message: {"type":"message","message":
-  // {"role":...,"content":[...]}}. Reading `content` off the line itself found
-  // nothing in every real transcript, which is why a run that had not written
-  // its result yet reported no steps at all - the row could not say what the
-  // child was doing, and opening it answered "No output for this subagent
-  // run". The flat shape is still accepted so a caller holding a message can
-  // pass it directly.
+  const at = recordTime(entry);
+  const withTime = (text: string): RunStep => (at === undefined ? { text } : { text, at });
+  if (entry["recordType"] === "tool_start") {
+    const toolName = entry["toolName"];
+    const preview = entry["argsPreview"];
+    if (typeof toolName !== "string" || toolName === "") return undefined;
+    return withTime(typeof preview === "string" && preview.trim() !== "" ? clip(`${toolName}: ${oneLine(preview)}`, STEP_CHARS) : toolName);
+  }
   const message: unknown = entry["message"];
-  const content: unknown = isRecord(message) ? message["content"] : entry["content"];
+  const holder = isRecord(message) ? message : entry;
+  if (holder["role"] !== "assistant") return undefined;
+  const content: unknown = holder["content"];
   if (!Array.isArray(content)) return undefined;
   // Walk backwards over the raw array: the last step is the interesting one,
   // and copying to reverse it would mean spreading values of unknown shape.
   for (let index = content.length - 1; index >= 0; index -= 1) {
     const part: unknown = content[index];
     if (!isRecord(part)) continue;
-    const partRecord = part;
-    const toolName = partRecord["toolName"];
-    if (typeof toolName === "string" && toolName !== "") return toolName;
-    const type = partRecord["type"];
-    const text = partRecord["text"];
-    if (type === "text" && typeof text === "string" && text.trim() !== "") return summarize(text);
+    const name = part["name"];
+    if (part["type"] === "toolCall" && typeof name === "string" && name !== "") {
+      const preview = argumentsPreview(part["arguments"]);
+      return withTime(preview === "" ? name : clip(`${name}: ${preview}`, STEP_CHARS));
+    }
+    const text = part["text"];
+    if (part["type"] === "text" && typeof text === "string" && text.trim() !== "") return withTime(summarize(text, STEP_CHARS));
   }
   return undefined;
 }
 
-function summarize(text: string): string {
-  const firstLine = text.trim().split("\n")[0] ?? "";
-  return firstLine.length > 120 ? `${firstLine.slice(0, 119)}…` : firstLine;
+/** The record's own time: the artifact's and Pi's line `timestamp` (ISO), or a message's epoch milliseconds. */
+function recordTime(entry: Record<string, unknown>): string | undefined {
+  const raw = entry["timestamp"];
+  const ms = typeof raw === "string" ? Date.parse(raw) : typeof raw === "number" ? raw : Number.NaN;
+  return Number.isFinite(ms) ? new Date(ms).toISOString() : undefined;
+}
+
+/** What a tool call was given, in one short line: its first text argument (a command, a path), else the arguments as JSON. */
+export function argumentsPreview(args: unknown): string {
+  if (!isRecord(args)) return "";
+  const first = Object.values(args).find((value) => typeof value === "string" && value.trim() !== "");
+  const text = typeof first === "string" ? first : Object.keys(args).length === 0 ? "" : JSON.stringify(args);
+  return clip(oneLine(text), STEP_CHARS);
+}
+
+function oneLine(text: string): string {
+  return text.replace(/\s+/gu, " ").trim();
+}
+
+function clip(text: string, max: number): string {
+  return text.length > max ? `${text.slice(0, max - 1)}…` : text;
+}
+
+function summarize(text: string, max = 120): string {
+  return clip(text.trim().split("\n")[0] ?? "", max);
 }
 
 async function readArtifacts(artifactsDir: string, names: readonly string[]): Promise<Map<string, RunArtifact>> {
@@ -792,6 +886,7 @@ async function readArtifacts(artifactsDir: string, names: readonly string[]): Pr
     const record = parsed;
     const summaryFromOutput = outputs.has(runId) ? await firstLineOfOutput(artifactsDir, names, runId) : undefined;
     artifacts.set(runId, {
+      prefix: join(artifactsDir, name.slice(0, -"_meta.json".length)),
       ...(summaryFromOutput === undefined ? {} : { outputSummary: summaryFromOutput }),
       ...(typeof record["agent"] === "string" ? { agent: record["agent"] } : {}),
       // The tool redacts prompts, so `task` is the literal string
@@ -881,8 +976,8 @@ async function readRunProgress(runsDir: string, runId: string, maxChars: number)
     } catch {
       continue; // a truncated first line from slicing, or a partial write
     }
-    const step = stepFromEntry(parsed);
-    if (step !== undefined) steps.push(step);
+    const step = stepOf(parsed);
+    if (step !== undefined) steps.push(step.text);
   }
   if (steps.length === 0) return undefined;
   return clamp(`_This run has not written a result yet. Its latest steps:_\n\n${steps.slice(-40).map((step) => `- ${step}`).join("\n")}`, maxChars);
@@ -903,7 +998,7 @@ async function findRunTranscript(runsDir: string, runId: string): Promise<string
 
 
 /** A run id is a path segment here, so it may not steer the read out of the directory. */
-function isSafeRunId(runId: string): boolean {
+export function isSafeRunId(runId: string): boolean {
   return runId !== "" && !runId.includes("/") && !runId.includes("\\") && !runId.includes("..");
 }
 

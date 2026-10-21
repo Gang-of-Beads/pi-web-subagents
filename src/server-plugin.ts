@@ -1,6 +1,7 @@
 import { basename, dirname } from "node:path";
 import type { JsonValue, PiWebServerPlugin } from "@gang-of-beads/pi-web-plugin-api/server-plugin-api";
-import { listSubagentRuns, readSubagentRunOutput, type SubagentRunInfo } from "./server/runs.js";
+import { isSafeRunId, listSubagentRuns, readSubagentRunOutput, type SubagentRunInfo } from "./server/runs.js";
+import { readRunConversation, readRunDetail } from "./server/runDetail.js";
 
 /**
  * Subagents' server half.
@@ -21,6 +22,14 @@ function sessionFileFrom(input: unknown): string | undefined {
   return typeof path === "string" && path.endsWith(".jsonl") ? path : undefined;
 }
 
+/** The session and run an opened row asks about, or the refusal for the first one that is not well-formed. */
+function runRequestFrom(input: unknown): { sessionFile: string; runId: string } | "no-session" | "no-run" {
+  const sessionFile = sessionFileFrom(input);
+  if (sessionFile === undefined) return "no-session";
+  const runId: unknown = typeof input === "object" && input !== null ? Reflect.get(input, "runId") : undefined;
+  return typeof runId !== "string" || !isSafeRunId(runId) ? "no-run" : { sessionFile, runId };
+}
+
 function runsAsJson(runs: readonly SubagentRunInfo[]): JsonValue {
   return runs.map((run) => ({
     runId: run.runId,
@@ -30,6 +39,7 @@ function runsAsJson(runs: readonly SubagentRunInfo[]): JsonValue {
     elapsedMs: run.elapsedMs,
     startedAt: run.startedAt,
     ...(run.lastActivity === undefined ? {} : { lastActivity: run.lastActivity }),
+    ...(run.lastActivityAt === undefined ? {} : { lastActivityAt: run.lastActivityAt }),
     ...(run.task === undefined ? {} : { task: run.task }),
     ...(run.model === undefined ? {} : { model: run.model }),
     ...(run.toolCount === undefined ? {} : { toolCount: run.toolCount }),
@@ -66,6 +76,17 @@ const plugin: PiWebServerPlugin = {
         if (sessionFile === undefined || typeof runId !== "string" || runId === "") return { known: false, reason: "no-run" };
         const output = await readSubagentRunOutput(dirname(sessionFile), runId, { parentSessionId: basename(sessionFile, ".jsonl") });
         return output === undefined ? { known: false, reason: "not-written" } : { known: true, output };
+      },
+      "runs.detail": async (input, { signal }): Promise<JsonValue> => {
+        const request = runRequestFrom(input);
+        if (typeof request === "string") return { known: false, reason: request };
+        const countMessages = typeof input === "object" && input !== null && Reflect.get(input, "countMessages") === true;
+        return readRunDetail(dirname(request.sessionFile), basename(request.sessionFile, ".jsonl"), request.runId, countMessages, signal);
+      },
+      "runs.conversation": async (input, { signal }): Promise<JsonValue> => {
+        const request = runRequestFrom(input);
+        if (typeof request === "string") return { known: false, reason: request };
+        return readRunConversation(dirname(request.sessionFile), basename(request.sessionFile, ".jsonl"), request.runId, signal);
       },
     },
   }),
