@@ -407,9 +407,17 @@ interface ParentRecords {
  * found, and a run that reported its error read as unknown, then lost. And the
  * status is the only record that a run was stopped: `meta.json` says only
  * `exitCode: 1`, which read as failed.
+ *
+ * A run started through a workflow (`/run ... --bg`) is notified as the
+ * workflow (`agent: "workflow"`, the workflow's own run id, no `sessionValue`),
+ * and its children ride along in `childRuns[]` with their own run ids and
+ * statuses. Without reading those, a child stopped from its row read
+ * `exitCode: 1` from its `meta.json` and showed Failed (seen live on 8505,
+ * 2026-10-21). A notice the tool sent for the child itself still wins.
  */
 interface NotifiedOutcomes {
   byToolRunId: Map<string, NotifiedOutcome>;
+  byWorkflowChildRunId: Map<string, NotifiedOutcome>;
   toolRunIdByDirectory: Map<string, string>;
 }
 
@@ -419,7 +427,11 @@ interface NotifiedOutcome {
 }
 
 function emptyNotifiedOutcomes(): NotifiedOutcomes {
-  return { byToolRunId: new Map(), toolRunIdByDirectory: new Map() };
+  return { byToolRunId: new Map(), byWorkflowChildRunId: new Map(), toolRunIdByDirectory: new Map() };
+}
+
+function notifiedOutcomeOf(notified: NotifiedOutcomes, runId: string): NotifiedOutcome | undefined {
+  return notified.byToolRunId.get(runId) ?? notified.byWorkflowChildRunId.get(runId);
 }
 
 /** The tool's outcome words that end a run; `paused` does not, so it is no outcome here. */
@@ -445,16 +457,28 @@ function collectNotifiedOutcomes(line: string, parentSessionId: string, notified
   for (const run of runs) {
     if (!isRecord(run)) continue;
     const runId = run["runId"];
-    const rawStatus = run["status"];
     if (typeof runId !== "string" || runId === "") continue;
     const sessionValue = run["sessionValue"];
     const directory = typeof sessionValue === "string" ? childDirectoryOf(sessionValue, parentSessionId) : undefined;
     if (directory !== undefined) notified.toolRunIdByDirectory.set(directory, runId);
-    const status = typeof rawStatus === "string" && Object.hasOwn(NOTIFIED_STATUS, rawStatus) ? NOTIFIED_STATUS[rawStatus] : undefined;
-    if (status === undefined) continue;
-    const durationMs = run["durationMs"];
-    notified.byToolRunId.set(runId, { status, ...(typeof durationMs === "number" ? { durationMs } : {}) });
+    collectNotifiedOutcome(run, notified.byToolRunId);
+    const childRuns = run["childRuns"];
+    if (!Array.isArray(childRuns)) continue;
+    for (const child of childRuns) {
+      if (isRecord(child)) collectNotifiedOutcome(child, notified.byWorkflowChildRunId);
+    }
   }
+}
+
+/** Records one notified entry's ending outcome under its run id; an entry with no id or no ending status is no outcome. */
+function collectNotifiedOutcome(entry: Record<string, unknown>, outcomes: Map<string, NotifiedOutcome>): void {
+  const runId = entry["runId"];
+  const rawStatus = entry["status"];
+  if (typeof runId !== "string" || runId === "") return;
+  const status = typeof rawStatus === "string" && Object.hasOwn(NOTIFIED_STATUS, rawStatus) ? NOTIFIED_STATUS[rawStatus] : undefined;
+  if (status === undefined) return;
+  const durationMs = entry["durationMs"];
+  outcomes.set(runId, { status, ...(typeof durationMs === "number" ? { durationMs } : {}) });
 }
 
 /** `<sessionDir>/<parentSessionId>/<directory>/run-N/session.jsonl` -> `<directory>`, for this parent only. */
@@ -529,7 +553,7 @@ async function describeRun(runsDir: string, runId: string, artifacts: Map<string
   const linkedRunId = identity?.runId ?? notified.toolRunIdByDirectory.get(runId);
   const artifact = artifacts.get(linkedRunId ?? runId) ?? artifacts.get(runId);
   const artifactRunId = linkedRunId !== undefined && artifacts.has(linkedRunId) ? linkedRunId : runId;
-  const outcome = notified.byToolRunId.get(linkedRunId ?? runId);
+  const outcome = notifiedOutcomeOf(notified, linkedRunId ?? runId);
   let startedAt = artifact?.timestamp;
   let lastWriteMs: number | undefined;
   if (transcript !== undefined) {

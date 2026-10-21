@@ -120,7 +120,10 @@ async function recordsOfParent(sessionFile, parentSessionId) {
   return { ids, notified };
 }
 function emptyNotifiedOutcomes() {
-  return { byToolRunId: /* @__PURE__ */ new Map(), toolRunIdByDirectory: /* @__PURE__ */ new Map() };
+  return { byToolRunId: /* @__PURE__ */ new Map(), byWorkflowChildRunId: /* @__PURE__ */ new Map(), toolRunIdByDirectory: /* @__PURE__ */ new Map() };
+}
+function notifiedOutcomeOf(notified, runId) {
+  return notified.byToolRunId.get(runId) ?? notified.byWorkflowChildRunId.get(runId);
 }
 var NOTIFIED_STATUS = {
   completed: "done",
@@ -142,16 +145,26 @@ function collectNotifiedOutcomes(line, parentSessionId, notified) {
   for (const run of runs) {
     if (!isRecord(run)) continue;
     const runId = run["runId"];
-    const rawStatus = run["status"];
     if (typeof runId !== "string" || runId === "") continue;
     const sessionValue = run["sessionValue"];
     const directory = typeof sessionValue === "string" ? childDirectoryOf(sessionValue, parentSessionId) : void 0;
     if (directory !== void 0) notified.toolRunIdByDirectory.set(directory, runId);
-    const status = typeof rawStatus === "string" && Object.hasOwn(NOTIFIED_STATUS, rawStatus) ? NOTIFIED_STATUS[rawStatus] : void 0;
-    if (status === void 0) continue;
-    const durationMs = run["durationMs"];
-    notified.byToolRunId.set(runId, { status, ...typeof durationMs === "number" ? { durationMs } : {} });
+    collectNotifiedOutcome(run, notified.byToolRunId);
+    const childRuns = run["childRuns"];
+    if (!Array.isArray(childRuns)) continue;
+    for (const child of childRuns) {
+      if (isRecord(child)) collectNotifiedOutcome(child, notified.byWorkflowChildRunId);
+    }
   }
+}
+function collectNotifiedOutcome(entry, outcomes) {
+  const runId = entry["runId"];
+  const rawStatus = entry["status"];
+  if (typeof runId !== "string" || runId === "") return;
+  const status = typeof rawStatus === "string" && Object.hasOwn(NOTIFIED_STATUS, rawStatus) ? NOTIFIED_STATUS[rawStatus] : void 0;
+  if (status === void 0) return;
+  const durationMs = entry["durationMs"];
+  outcomes.set(runId, { status, ...typeof durationMs === "number" ? { durationMs } : {} });
 }
 function childDirectoryOf(sessionFile, parentSessionId) {
   const runDir = dirname(dirname(sessionFile));
@@ -199,7 +212,7 @@ async function describeRun(runsDir, runId, artifacts, runningByRunId, notified, 
   const linkedRunId = identity?.runId ?? notified.toolRunIdByDirectory.get(runId);
   const artifact = artifacts.get(linkedRunId ?? runId) ?? artifacts.get(runId);
   const artifactRunId = linkedRunId !== void 0 && artifacts.has(linkedRunId) ? linkedRunId : runId;
-  const outcome = notified.byToolRunId.get(linkedRunId ?? runId);
+  const outcome = notifiedOutcomeOf(notified, linkedRunId ?? runId);
   let startedAt = artifact?.timestamp;
   let lastWriteMs;
   if (transcript !== void 0) {
