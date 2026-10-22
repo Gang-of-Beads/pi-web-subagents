@@ -1,6 +1,6 @@
 {
   "name": "@gang-of-beads/pi-web-subagents",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "PI WEB plugin for pi-subagents: a Subagents tab listing the session's runs with their output, a reply card for a child's supervisor request, and short rows for subagent notices.",
   "license": "MIT",
   "type": "module",
