@@ -54,7 +54,7 @@
     "@gang-of-beads/pi-web-plugin-api": "^0.1.0-alpha.5",
     "@types/node": "^24.13.3",
     "esbuild": "^0.28.2",
-    "happy-dom": "^20.11.1",
+    "happy-dom": "^21.0.4",
     "lit": "^3.3.3",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
