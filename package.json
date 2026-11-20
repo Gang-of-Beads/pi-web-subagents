@@ -1,6 +1,6 @@
 {
   "name": "@gang-of-beads/pi-web-subagents",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "pi-subagents with its PI WEB half: the subagent tool in pi's TUI and a Subagents tab in PI WEB, from one install.",
   "license": "MIT",
   "type": "module",

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.1
+
+- Republished: 0.2.0 was accepted by the registry and never appeared.
+
 ## 0.2.0
 
 - **This package is now also the pi extension.** `pi.extensions` loads a re-export of `@gang-of-beads/pi-subagents`, which arrives as a dependency, and the runtime's agents, skills and prompts ship as copies kept in step by `npm run check`. One install covers the TUI's `subagent` tool and the Subagents tab; installing both packages loads the extension twice.
