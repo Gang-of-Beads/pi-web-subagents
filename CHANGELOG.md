@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0
+
+- **This package is now also the pi extension.** `pi.extensions` loads a re-export of `@gang-of-beads/pi-subagents`, which arrives as a dependency, and the runtime's agents, skills and prompts ship as copies kept in step by `npm run check`. One install covers the TUI's `subagent` tool and the Subagents tab; installing both packages loads the extension twice.
+- Carries `@gang-of-beads/pi-subagents` 0.89.1 as a vendored tarball (`vendor/`), the Pi 1.5 line, until that version is on npm.
+
 ## 0.1.3
 
 - Require plugin API alpha.10; a host without `session.runCommand` now refuses cleanly instead of failing on the type.
