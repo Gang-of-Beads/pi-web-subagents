@@ -1,6 +1,8 @@
 # pi-web-subagents
 
-A [PI WEB](https://github.com/Gang-of-Beads/pi-web) plugin for [pi-subagents](https://github.com/Gang-of-Beads/pi-subagents), the extension behind the `subagent` tool.
+[pi-subagents](https://github.com/Gang-of-Beads/pi-subagents) in one install: the `subagent` tool for pi's TUI, plus a [PI WEB](https://github.com/Gang-of-Beads/pi-web) half that draws its runs. The runtime is the published `@gang-of-beads/pi-subagents` and this package carries it as a dependency, so upstream fixes arrive here on the next release of either package.
+
+This package is the whole extension for PI WEB users: install it and `/subagent` works in the TUI as usual. Install `pi-subagents` **instead** only when PI WEB is not in use.
 
 - A **Subagents** tab beside the conversation lists the runs the open session started, with each run's state and its output; its badge counts the running ones. The tab shows only where the extension is loaded.
 - A running row opens to **Steer** (one line of words, sent with the paper plane) with **Stop** at the end of the same line. They send the extension's own commands in the open session, exactly as typing them would: `/subagents-steer <run-id> <words>` and `/subagents-stop <run-id>`, with the id the subagent tool knows the run by. The row's note shows what the extension answered. The extension posts its usual "Running subagent..." card in the conversation for each. A run held inside the current reply (a foreground run) has neither: it stops with the session's Stop. The steer words are dropped when the row closes.
@@ -14,13 +16,15 @@ A [PI WEB](https://github.com/Gang-of-Beads/pi-web) plugin for [pi-subagents](ht
 
 - PI WEB 2.202610.5 or later. Earlier releases bundle their own copy of this plugin, which wins over an installed one (Settings → PI WEB plugins reports the duplicate id).
 - Steer and Stop need a PI WEB whose plugin pages can open a row and run the commands a plugin declares (the plugin API's `renderMessageField`, `renderButton` and a workspace page's `session`). Conversation also needs the plugin API's `showDialog` and `renderMarkdownHtml`; without them a row has no Conversation row. On an older PI WEB the rows stay flat, as before; on a PI WEB that draws the row but cannot run the commands, an open row says "Steer and Stop need a newer PI WEB on this machine."
-- The pi-subagents extension installed in pi.
+- pi's own extension host. The `subagent` tool, its agents, skills and prompts arrive with this package; do not also install `@gang-of-beads/pi-subagents`, or the extension loads twice.
 
 ## Install
 
 ```sh
 pi install npm:@gang-of-beads/pi-web-subagents
 ```
+
+The agents, skills and prompts are copies of the pinned runtime's, checked against it by `npm run check`. The PI WEB half needs nothing from the TUI half and vice versa; both load from this one package.
 
 To follow `main` instead of releases, install `git:github.com/Gang-of-Beads/pi-web-subagents`.
 

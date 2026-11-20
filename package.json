@@ -1,14 +1,15 @@
 {
   "name": "@gang-of-beads/pi-web-subagents",
-  "version": "0.1.3",
-  "description": "PI WEB plugin for pi-subagents: a Subagents tab listing the session's runs with their output, a reply card for a child's supervisor request, and short rows for subagent notices.",
+  "version": "0.2.0",
+  "description": "pi-subagents with its PI WEB half: the subagent tool in pi's TUI and a Subagents tab in PI WEB, from one install.",
   "license": "MIT",
   "type": "module",
   "keywords": [
     "pi-package",
+    "pi-subagents",
     "pi-web",
     "pi-web-plugin",
-    "pi-subagents"
+    "subagents"
   ],
   "repository": {
     "type": "git",
@@ -23,6 +24,10 @@
   },
   "files": [
     "dist",
+    "agents",
+    "skills",
+    "prompts",
+    "extension.ts",
     "README.md",
     "LICENSE",
     "CHANGELOG.md",
@@ -49,7 +54,8 @@
     "build": "node build.mjs",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "check": "npm run typecheck && npm test && npm run build && git diff --exit-code -- dist"
+    "check": "node scripts/sync-assets.mjs --check && npm run typecheck && npm test && npm run build && git diff --exit-code -- dist",
+    "sync:assets": "node scripts/sync-assets.mjs"
   },
   "devDependencies": {
     "@gang-of-beads/pi-web-plugin-api": "^0.1.0-alpha.10",
@@ -59,5 +65,29 @@
     "lit": "^3.3.3",
     "typescript": "^6.0.3",
     "vitest": "^4.1.10"
+  },
+  "dependencies": {
+    "@gang-of-beads/pi-subagents": "^0.89.1"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-ai": ">=1.2.0",
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "pi": {
+    "extensions": [
+      "./extension.ts"
+    ],
+    "agents": [
+      "./agents"
+    ],
+    "skills": [
+      "./skills"
+    ],
+    "prompts": [
+      "./prompts"
+    ]
   }
 }
