@@ -23,15 +23,16 @@
     "node": ">=22.19.0"
   },
   "files": [
-    "dist",
-    "agents",
-    "skills",
-    "prompts",
-    "extension.ts",
-    "README.md",
-    "LICENSE",
     "CHANGELOG.md",
-    "THIRD_PARTY_NOTICES.md"
+    "LICENSE",
+    "README.md",
+    "THIRD_PARTY_NOTICES.md",
+    "agents",
+    "dist",
+    "extension.ts",
+    "prompts",
+    "skills",
+    "vendor"
   ],
   "publishConfig": {
     "access": "public"
@@ -67,7 +68,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "@gang-of-beads/pi-subagents": "^0.89.1"
+    "@gang-of-beads/pi-subagents": "file:vendor/gang-of-beads-pi-subagents-0.89.1.tgz"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

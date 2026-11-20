@@ -25,7 +25,8 @@ describe("one package, both hosts", () => {
 	});
 
 	it("pins the runtime as a runtime dependency, not a peer", () => {
-		expect(manifest.dependencies?.["@gang-of-beads/pi-subagents"]).toMatch(/^\^\d+\.\d+\.\d+$/);
+		// A vendored tarball today, its version implied by the file name until npm serves it.
+		expect(manifest.dependencies?.["@gang-of-beads/pi-subagents"]).toMatch(/^(\^\d+\.\d+\.\d+|file:vendor\/[^/]+-\d+\.\d+\.\d+\.tgz)$/);
 		expect(manifest.peerDependencies?.["@gang-of-beads/pi-subagents"]).toBeUndefined();
 	});
 
