@@ -1,6 +1,6 @@
 {
   "name": "@gang-of-beads/pi-web-subagents",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "description": "pi-subagents with its PI WEB half: the subagent tool in pi's TUI and a Subagents tab in PI WEB, from one install.",
   "license": "MIT",
   "type": "module",
@@ -31,8 +31,7 @@
     "dist",
     "extension.ts",
     "prompts",
-    "skills",
-    "vendor"
+    "skills"
   ],
   "publishConfig": {
     "access": "public"
@@ -68,7 +67,7 @@
     "vitest": "^4.1.10"
   },
   "dependencies": {
-    "@gang-of-beads/pi-subagents": "file:vendor/gang-of-beads-pi-subagents-0.89.1.tgz"
+    "@gang-of-beads/pi-subagents": "github:Gang-of-Beads/pi-subagents#v0.89.1"
   },
   "peerDependencies": {
     "@earendil-works/pi-agent-core": "*",

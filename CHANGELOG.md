@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.2
+
+- The runtime comes from its repository tag (`github:…#v0.89.1`) instead of a vendored tarball: two releases were accepted by the registry and never appeared with a `file:` dependency inside the tarball.
+
 ## 0.2.1
 
 - Republished: 0.2.0 was accepted by the registry and never appeared.

@@ -1,6 +1,6 @@
 # pi-web-subagents
 
-[pi-subagents](https://github.com/Gang-of-Beads/pi-subagents) in one install: the `subagent` tool for pi's TUI, plus a [PI WEB](https://github.com/Gang-of-Beads/pi-web) half that draws its runs. The runtime is `@gang-of-beads/pi-subagents`, carried as a dependency (vendored until that version is on npm), so upstream fixes arrive here on the next release of either package.
+[pi-subagents](https://github.com/Gang-of-Beads/pi-subagents) in one install: the `subagent` tool for pi's TUI, plus a [PI WEB](https://github.com/Gang-of-Beads/pi-web) half that draws its runs. The runtime is `@gang-of-beads/pi-subagents`, carried as a dependency from its repository tag until that release is on npm, so upstream fixes arrive here on the next release of either package.
 
 This package is the whole extension for PI WEB users: install it and `/subagent` works in the TUI as usual. Install `pi-subagents` **instead** only when PI WEB is not in use.
 
