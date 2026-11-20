@@ -8,5 +8,5 @@ import * as esbuild from "esbuild";
  */
 await rm("dist", { recursive: true, force: true });
 const shared = { bundle: true, format: "esm", target: "es2022", legalComments: "eof", logLevel: "info" };
-await esbuild.build({ ...shared, entryPoints: ["src/pi-web-plugin.ts"], outfile: "dist/browser/pi-web-plugin.js", platform: "browser" });
+await esbuild.build({ ...shared, banner: { js: "/*! Bundles Lit, BSD-3-Clause: see THIRD_PARTY_NOTICES.md */" }, entryPoints: ["src/pi-web-plugin.ts"], outfile: "dist/browser/pi-web-plugin.js", platform: "browser" });
 await esbuild.build({ ...shared, entryPoints: ["src/server-plugin.ts"], outfile: "dist/server-plugin.js", platform: "node" });

@@ -1,3 +1,4 @@
+/*! Bundles Lit, BSD-3-Clause: see THIRD_PARTY_NOTICES.md */
 var __defProp = Object.defineProperty;
 var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __decorateClass = (decorators, target, key, kind) => {
