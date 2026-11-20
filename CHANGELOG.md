@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.3
+
+- Require plugin API alpha.10; a host without `session.runCommand` now refuses cleanly instead of failing on the type.
+- Ship the BSD-3 notice for the Lit the browser bundle inlines.
+
 ## 0.1.2
 
 - Every Subagents row opens: the run's task as a bubble, its result as formatted text, the live step while it runs, its facts (tokens as "212 in · 111k out · 18.9M cached") and a **Conversation** row that opens the run's conversation in a dialog, with the reader's messages as bubbles, tool calls as chips and only failed tool output.
