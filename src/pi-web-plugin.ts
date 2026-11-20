@@ -248,7 +248,9 @@ const plugin: PiWebPlugin = {
       panel.host.requestRender();
       const outcome: PluginSessionCommandOutcome = session === undefined || sessionId === undefined
         ? { kind: "refused", reason: "no-session", words: "No session is open on this page." }
-        : await session.runCommand({ sessionId, name: RUN_COMMANDS[command], args }).catch((): PluginSessionCommandOutcome => ({ kind: "unknown", words: "" }));
+        : session.runCommand === undefined
+          ? { kind: "refused", reason: "commands-unknown", words: "This host cannot run session commands." }
+          : await session.runCommand({ sessionId, name: RUN_COMMANDS[command], args }).catch((): PluginSessionCommandOutcome => ({ kind: "unknown", words: "" }));
       runNotes.set(key, { kind: "answered", command, outcome, listAtAnswer: runs.view(sessionFile)?.state });
       runs.refresh();
       panel.host.requestRender();

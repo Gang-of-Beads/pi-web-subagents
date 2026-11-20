@@ -1888,7 +1888,7 @@ ${sessionFile}`;
       const sessionId = selectedSessionField(panel, "id");
       runNotes.set(key, { kind: "pending", command });
       panel.host.requestRender();
-      const outcome = session === void 0 || sessionId === void 0 ? { kind: "refused", reason: "no-session", words: "No session is open on this page." } : await session.runCommand({ sessionId, name: RUN_COMMANDS[command], args }).catch(() => ({ kind: "unknown", words: "" }));
+      const outcome = session === void 0 || sessionId === void 0 ? { kind: "refused", reason: "no-session", words: "No session is open on this page." } : session.runCommand === void 0 ? { kind: "refused", reason: "commands-unknown", words: "This host cannot run session commands." } : await session.runCommand({ sessionId, name: RUN_COMMANDS[command], args }).catch(() => ({ kind: "unknown", words: "" }));
       runNotes.set(key, { kind: "answered", command, outcome, listAtAnswer: runs.view(sessionFile)?.state });
       runs.refresh();
       panel.host.requestRender();
