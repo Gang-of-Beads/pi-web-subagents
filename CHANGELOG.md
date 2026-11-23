@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.2.3
+## 0.2.4
 
 - Depend on `@gang-of-beads/pi-subagents@^0.89.1` from the registry now that it is published, replacing the `github:` tag reference. Installs resolve from npm again instead of cloning the repository.
 
