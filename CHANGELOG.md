@@ -1,5 +1,9 @@
 # Changelog
 
+## Unreleased
+
+- Deprecated: the plugin half moved into [pi-subagents](https://github.com/Gang-of-Beads/pi-subagents) 0.90.0. Install that package instead; this one keeps working for existing installs.
+
 ## 0.2.4
 
 - Depend on `@gang-of-beads/pi-subagents@^0.89.1` from the registry now that it is published, replacing the `github:` tag reference. Installs resolve from npm again instead of cloning the repository.
