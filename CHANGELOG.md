@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.2.3
+
+- Depend on `@gang-of-beads/pi-subagents@^0.89.1` from the registry now that it is published, replacing the `github:` tag reference. Installs resolve from npm again instead of cloning the repository.
+
 ## 0.2.2
 
 - The runtime comes from its repository tag (`github:…#v0.89.1`) instead of a vendored tarball: two releases were accepted by the registry and never appeared with a `file:` dependency inside the tarball.
