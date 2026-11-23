@@ -1,93 +1,93 @@
 {
-  "name": "@gang-of-beads/pi-web-subagents",
-  "version": "0.2.4",
-  "description": "pi-subagents with its PI WEB half: the subagent tool in pi's TUI and a Subagents tab in PI WEB, from one install.",
-  "license": "MIT",
-  "type": "module",
-  "keywords": [
-    "pi-package",
-    "pi-subagents",
-    "pi-web",
-    "pi-web-plugin",
-    "subagents"
-  ],
-  "repository": {
-    "type": "git",
-    "url": "git+https://github.com/Gang-of-Beads/pi-web-subagents.git"
-  },
-  "bugs": {
-    "url": "https://github.com/Gang-of-Beads/pi-web-subagents/issues"
-  },
-  "homepage": "https://github.com/Gang-of-Beads/pi-web-subagents#readme",
-  "engines": {
-    "node": ">=22.19.0"
-  },
-  "files": [
-    "CHANGELOG.md",
-    "LICENSE",
-    "README.md",
-    "THIRD_PARTY_NOTICES.md",
-    "agents",
-    "dist",
-    "extension.ts",
-    "prompts",
-    "skills"
-  ],
-  "publishConfig": {
-    "access": "public"
-  },
-  "piWeb": {
-    "plugins": [
-      {
-        "id": "subagents",
-        "browserRoot": "dist/browser",
-        "module": "dist/browser/pi-web-plugin.js",
-        "serverModule": "dist/server-plugin.js",
-        "sessionCommands": [
-          "subagents-steer",
-          "subagents-stop"
-        ]
-      }
-    ]
-  },
-  "scripts": {
-    "build": "node build.mjs",
-    "typecheck": "tsc --noEmit",
-    "test": "vitest run",
-    "check": "node scripts/sync-assets.mjs --check && npm run typecheck && npm test && npm run build && git diff --exit-code -- dist",
-    "sync:assets": "node scripts/sync-assets.mjs"
-  },
-  "devDependencies": {
-    "@gang-of-beads/pi-web-plugin-api": "^0.1.0-alpha.10",
-    "@types/node": "^24.13.3",
-    "esbuild": "^0.28.2",
-    "happy-dom": "^21.0.4",
-    "lit": "^3.3.3",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.10"
-  },
-  "dependencies": {
-    "@gang-of-beads/pi-subagents": "^0.89.1"
-  },
-  "peerDependencies": {
-    "@earendil-works/pi-agent-core": "*",
-    "@earendil-works/pi-ai": ">=1.2.0",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
-    "typebox": "*"
-  },
-  "pi": {
-    "extensions": [
-      "./extension.ts"
-    ],
-    "agents": [
-      "./agents"
-    ],
-    "skills": [
-      "./skills"
-    ],
-    "prompts": [
-      "./prompts"
-    ]
-  }
+	"name": "@gang-of-beads/pi-web-subagents",
+	"version": "0.2.5",
+	"description": "pi-subagents with its PI WEB half: the subagent tool in pi's TUI and a Subagents tab in PI WEB, from one install.",
+	"license": "MIT",
+	"type": "module",
+	"keywords": [
+		"pi-package",
+		"pi-subagents",
+		"pi-web",
+		"pi-web-plugin",
+		"subagents"
+	],
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/Gang-of-Beads/pi-web-subagents.git"
+	},
+	"bugs": {
+		"url": "https://github.com/Gang-of-Beads/pi-web-subagents/issues"
+	},
+	"homepage": "https://github.com/Gang-of-Beads/pi-web-subagents#readme",
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"files": [
+		"CHANGELOG.md",
+		"LICENSE",
+		"README.md",
+		"THIRD_PARTY_NOTICES.md",
+		"agents",
+		"dist",
+		"extension.ts",
+		"prompts",
+		"skills"
+	],
+	"publishConfig": {
+		"access": "public"
+	},
+	"piWeb": {
+		"plugins": [
+			{
+				"id": "subagents",
+				"browserRoot": "dist/browser",
+				"module": "dist/browser/pi-web-plugin.js",
+				"serverModule": "dist/server-plugin.js",
+				"sessionCommands": [
+					"subagents-steer",
+					"subagents-stop"
+				]
+			}
+		]
+	},
+	"scripts": {
+		"build": "node build.mjs",
+		"typecheck": "tsc --noEmit",
+		"test": "vitest run",
+		"check": "node scripts/sync-assets.mjs --check && npm run typecheck && npm test && npm run build && git diff --exit-code -- dist",
+		"sync:assets": "node scripts/sync-assets.mjs"
+	},
+	"devDependencies": {
+		"@gang-of-beads/pi-web-plugin-api": "^0.1.0-alpha.10",
+		"@types/node": "^24.13.3",
+		"esbuild": "^0.28.2",
+		"happy-dom": "^21.0.4",
+		"lit": "^3.3.3",
+		"typescript": "^6.0.3",
+		"vitest": "^4.1.10"
+	},
+	"dependencies": {
+		"@gang-of-beads/pi-subagents": "^0.89.1"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-agent-core": "*",
+		"@earendil-works/pi-ai": ">=1.2.0",
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"typebox": "*"
+	},
+	"pi": {
+		"extensions": [
+			"./extension.ts"
+		],
+		"agents": [
+			"./agents"
+		],
+		"skills": [
+			"./skills"
+		],
+		"prompts": [
+			"./prompts"
+		]
+	}
 }

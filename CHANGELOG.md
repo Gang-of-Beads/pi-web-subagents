@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.5
 
 - Deprecated: the plugin half moved into [pi-subagents](https://github.com/Gang-of-Beads/pi-subagents) 0.90.0. Install that package instead; this one keeps working for existing installs.
 
